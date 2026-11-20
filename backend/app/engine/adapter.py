@@ -18,7 +18,7 @@ Responsibilities:
 - Never emits the legacy 'done' event.
 - Prevents duplicate 'error' events if an engine node already emitted one.
 - Propagates asyncio.CancelledError cleanly without emitting workflow_completed or workflow_failed.
-- Ensures the background consumer task is always cleanly stopped and awaited, draining pending items.
+- Cancels and bounds awaiting of the consumer task (5-second deadline) so unresponsive callbacks cannot deadlock the backend; cooperative callbacks terminate immediately.
 - Preserves all AI-engine owned files without modification.
 """
 from __future__ import annotations
@@ -164,6 +164,7 @@ class EngineAdapter:
                     internal_queue.task_done()
 
         consumer_task = asyncio.create_task(_consumer())
+        self._last_consumer_task = consumer_task
 
         final_state: Optional[AgentState] = None
         task_error: Optional[str] = None
@@ -186,6 +187,10 @@ class EngineAdapter:
                 task_error = "Workflow returned no state"
             elif final_state.get("error") and str(final_state.get("error")).strip():
                 task_error = str(final_state["error"])
+            else:
+                answer = final_state.get("final_answer")
+                if answer is None or not str(answer).strip():
+                    task_error = "Workflow completed without producing a final answer."
         except asyncio.CancelledError:
             is_cancelled = True
             logger.info("Engine task %s received cancellation.", task_id)
@@ -194,32 +199,54 @@ class EngineAdapter:
             logger.exception("Engine execution failed for task %s: %s", task_id, exc)
             task_error = str(exc)
         finally:
-            # 1. Put sentinel into internal_queue to signal the consumer to finish
-            await internal_queue.put(_SENTINEL)
-
-            # 2. Wait for consumer to process all remaining items
+            # 1. Put sentinel into internal_queue to signal the consumer to finish if running
             try:
-                await asyncio.wait_for(asyncio.shield(consumer_task), timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                consumer_task.cancel()
-                try:
-                    await consumer_task
-                except asyncio.CancelledError:
-                    pass
+                internal_queue.put_nowait(_SENTINEL)
+            except Exception:
+                pass
 
-            # 3. Drain and forward any remaining items in internal_queue
-            # (Guarantees no pending events are silently discarded)
+            # 2. Stop and await consumer task to prevent task leak.
+            # Normal cooperative callbacks terminate immediately upon cancellation.
+            # A 5-second deadline prevents indefinite hangs if a callback ignores cancellation.
+            # If the deadline expires, the consumer remains pending in the loop and a warning is logged.
+            if not consumer_task.done():
+                if is_cancelled:
+                    consumer_task.cancel()
+                else:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(consumer_task), timeout=5.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        consumer_task.cancel()
+
+                # Ensure consumer is awaited to completion with a bound to avoid hanging
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + 5.0
+                while not consumer_task.done():
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        logger.warning("Consumer task for %s did not terminate within cleanup deadline.", task_id)
+                        break
+                    try:
+                        await asyncio.wait_for(asyncio.shield(consumer_task), timeout=min(remaining, 1.0))
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        pass
+
+            # 3. Drain remaining items in internal_queue
+            # (Guarantees no pending events are silently discarded, and queue join does not deadlock)
             while not internal_queue.empty():
                 try:
                     item = internal_queue.get_nowait()
-                    if item is not _SENTINEL:
+                except (asyncio.QueueEmpty, ValueError):
+                    break
+
+                try:
+                    if item is not _SENTINEL and not is_cancelled:
                         try:
                             await _forward_event(item)
                         except Exception as ex:
                             logger.exception("Error forwarding drained event: %s", ex)
+                finally:
                     internal_queue.task_done()
-                except (asyncio.QueueEmpty, ValueError):
-                    break
 
             # 4. Emit exactly one backend terminal event if not cancelled
             if not is_cancelled:
@@ -262,12 +289,13 @@ class EngineAdapter:
                         })
 
         status = "error" if task_error else "done"
-        final_answer = final_state.get("final_answer") if final_state else None
+        raw_answer = final_state.get("final_answer") if final_state else None
+        final_answer = str(raw_answer) if (raw_answer and not task_error) else None
 
         return {
             "task_id": task_id,
             "status": status,
-            "final_answer": final_answer if not task_error else None,
+            "final_answer": final_answer,
             "error": task_error,
             "state": final_state,
         }

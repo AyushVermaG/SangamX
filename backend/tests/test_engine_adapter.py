@@ -221,6 +221,216 @@ async def test_adapter_cancellation_propagation(adapter):
     assert "workflow_failed" not in event_names
     assert "done" not in event_names
 
+    # Verify consumer task cleanup and awaiting
+    assert adapter._last_consumer_task is not None
+    assert adapter._last_consumer_task.done() is True
+
+
+async def test_parent_task_cancellation_terminates_and_awaits_consumer(adapter):
+    """
+    Explicit regression test for Issue 1:
+    Cancels the parent task running execute_task() while consumer is actively processing events.
+    Verifies that:
+    1. The internal queue consumer task is awaited and properly terminated (done=True).
+    2. CancelledError propagates to the parent caller.
+    3. Neither workflow_completed nor workflow_failed is emitted.
+    4. No background consumer task is left dangling or un-awaited.
+    """
+    consumer_processed = asyncio.Event()
+
+    async def blocking_run_graph(state, queue, config):
+        await queue.put({"event": "agent_start", "agent": "planner", "data": {}})
+        # Simulate long-running engine execution
+        await asyncio.sleep(60.0)
+        return state
+
+    received_events = []
+
+    async def callback(evt):
+        received_events.append(evt)
+        # Signals that consumer has actively retrieved and processed the event from the queue
+        consumer_processed.set()
+
+    with patch("app.engine.adapter.run_graph", side_effect=blocking_run_graph):
+        parent_task = asyncio.create_task(
+            adapter.execute_task(
+                query="cancellation test",
+                task_id="parent-cancel-1",
+                event_callback=callback,
+            )
+        )
+
+        # Wait until consumer has genuinely retrieved and processed an item from the queue
+        await consumer_processed.wait()
+
+        # Cancel the parent task executing execute_task() while consumer is running
+        parent_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await parent_task
+
+    # 1. Consumer task was terminated and awaited
+    assert adapter._last_consumer_task is not None
+    assert adapter._last_consumer_task.done() is True
+
+    # 2. Terminal events were NOT emitted for cancellation
+    event_names = [e["event"] for e in received_events]
+    assert "workflow_completed" not in event_names
+    assert "workflow_failed" not in event_names
+    assert "done" not in event_names
+
+
+async def test_cancellation_shield_await_bounded_deadline(adapter):
+    """
+    Verifies that when a parent task is cancelled while the consumer is awaiting inside an event callback,
+    the consumer task receives cancellation, terminates cleanly without deadlocking, and CancelledError propagates.
+    """
+    callback_entered = asyncio.Event()
+
+    async def slow_callback(evt):
+        callback_entered.set()
+        # Normal async callback handles CancelledError
+        await asyncio.sleep(30.0)
+
+    async def run_with_events(state, queue, config):
+        await queue.put({"event": "agent_start", "agent": "planner", "data": {}})
+        await asyncio.sleep(60.0)
+        return state
+
+    with patch("app.engine.adapter.run_graph", side_effect=run_with_events):
+        parent_task = asyncio.create_task(
+            adapter.execute_task(
+                query="bounded cancel test",
+                task_id="parent-bound-cancel",
+                event_callback=slow_callback,
+            )
+        )
+
+        await callback_entered.wait()
+        parent_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await parent_task
+
+    assert adapter._last_consumer_task is not None
+    assert adapter._last_consumer_task.done() is True
+
+
+async def test_adapter_fails_on_missing_final_answer(adapter):
+    """
+    Issue 2: A returned state without 'final_answer' (or final_answer is None)
+    must fail the workflow with workflow_failed and a descriptive error message.
+    """
+    async def no_answer_run_graph(state, queue, config):
+        await queue.put({"event": "agent_start", "agent": "planner", "data": {}})
+        # State returned with error=None, but final_answer is None
+        return {**state, "final_answer": None, "error": None}
+
+    events = []
+
+    with patch("app.engine.adapter.run_graph", side_effect=no_answer_run_graph):
+        result = await adapter.execute_task(
+            query="test missing answer",
+            task_id="task-missing-ans",
+            event_callback=lambda evt: events.append(evt),
+        )
+
+    assert result["status"] == "error"
+    assert result["final_answer"] is None
+    assert result["error"] == "Workflow completed without producing a final answer."
+
+    event_names = [e["event"] for e in events]
+    assert "workflow_completed" not in event_names
+    assert "workflow_failed" in event_names
+    failed_evt = next(e for e in events if e["event"] == "workflow_failed")
+    assert failed_evt["data"]["error"] == "Workflow completed without producing a final answer."
+
+
+async def test_adapter_fails_on_empty_final_answer(adapter):
+    """
+    Issue 2: A returned state with an empty string ('') final_answer
+    must fail the workflow with workflow_failed.
+    """
+    async def empty_answer_run_graph(state, queue, config):
+        return {**state, "final_answer": "", "error": None}
+
+    events = []
+
+    with patch("app.engine.adapter.run_graph", side_effect=empty_answer_run_graph):
+        result = await adapter.execute_task(
+            query="test empty answer",
+            task_id="task-empty-ans",
+            event_callback=lambda evt: events.append(evt),
+        )
+
+    assert result["status"] == "error"
+    assert result["final_answer"] is None
+    assert result["error"] == "Workflow completed without producing a final answer."
+
+    event_names = [e["event"] for e in events]
+    assert "workflow_completed" not in event_names
+    assert "workflow_failed" in event_names
+
+
+async def test_adapter_fails_on_whitespace_only_final_answer(adapter):
+    """
+    Issue 2: A returned state with whitespace-only final_answer
+    must fail the workflow with workflow_failed.
+    """
+    async def whitespace_answer_run_graph(state, queue, config):
+        return {**state, "final_answer": "   \n\t  ", "error": None}
+
+    events = []
+
+    with patch("app.engine.adapter.run_graph", side_effect=whitespace_answer_run_graph):
+        result = await adapter.execute_task(
+            query="test whitespace answer",
+            task_id="task-ws-ans",
+            event_callback=lambda evt: events.append(evt),
+        )
+
+    assert result["status"] == "error"
+    assert result["final_answer"] is None
+    assert result["error"] == "Workflow completed without producing a final answer."
+
+    event_names = [e["event"] for e in events]
+    assert "workflow_completed" not in event_names
+    assert "workflow_failed" in event_names
+
+
+async def test_adapter_succeeds_without_optional_state_fields(adapter):
+    """
+    Issue 2: A valid final_answer must NOT be rejected simply because
+    unrelated optional state fields (plan, research_out, analyst_out, critic_verdict) are absent.
+    """
+    valid_answer = "Valid synthesized answer with minimal state."
+
+    async def minimal_state_run_graph(state, queue, config):
+        # Return state dictionary containing only query and valid final_answer
+        return {
+            "query": state["query"],
+            "final_answer": valid_answer,
+            "error": None,
+        }
+
+    events = []
+
+    with patch("app.engine.adapter.run_graph", side_effect=minimal_state_run_graph):
+        result = await adapter.execute_task(
+            query="test minimal state",
+            task_id="task-min-state",
+            event_callback=lambda evt: events.append(evt),
+        )
+
+    assert result["status"] == "done"
+    assert result["final_answer"] == valid_answer
+    assert result["error"] is None
+
+    event_names = [e["event"] for e in events]
+    assert "workflow_completed" in event_names
+    assert "workflow_failed" not in event_names
+
+
 
 async def test_adapter_multiple_queued_events_and_drain(adapter):
     """All events placed into the internal queue are delivered and drained cleanly."""
