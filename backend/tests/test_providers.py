@@ -454,7 +454,7 @@ class TestFullAgentWorkflow:
         )
         plan_json = '{"tasks": [{"id": "t1", "type": "research", "description": "Find info", "priority": 1}], "approach": "Research first", "complexity": "low"}'
 
-        with patch("app.engine.providers.invoke_llm") as mock_invoke:
+        with patch("app.engine.agents.planner.invoke_llm", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResponse(
                 content=plan_json, provider="gemini", model="gemini-2.0-flash-exp"
             )
@@ -476,7 +476,7 @@ class TestFullAgentWorkflow:
         config = ModelConfig(researcher_provider="groq", researcher_model="llama-3.1-8b-instant")
         plan = {"tasks": [], "approach": "General", "complexity": "low"}
 
-        with patch("app.engine.providers.invoke_llm") as mock_invoke:
+        with patch("app.engine.agents.researcher.invoke_llm", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResponse(
                 content="Research findings here.", provider="groq", model="llama-3.1-8b-instant"
             )
@@ -497,7 +497,7 @@ class TestFullAgentWorkflow:
         research = AgentOutput(agent="researcher", content="R content", timestamp=datetime.utcnow())
         analyst = AgentOutput(agent="analyst", content="A content", timestamp=datetime.utcnow())
 
-        with patch("app.engine.providers.invoke_llm") as mock_invoke:
+        with patch("app.engine.agents.critic.invoke_llm", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResponse(
                 content='{"agree": true, "reason": "Outputs align", "confidence": 0.9}',
                 provider="groq",
@@ -518,7 +518,7 @@ class TestFullAgentWorkflow:
         plan = {"tasks": [], "approach": "General", "complexity": "low"}
 
         # invoke_llm itself returns ollama result (simulating internal fallback)
-        with patch("app.engine.providers.invoke_llm") as mock_invoke:
+        with patch("app.engine.agents.researcher.invoke_llm", new_callable=AsyncMock) as mock_invoke:
             mock_invoke.return_value = LLMResponse(
                 content="Local Ollama research answer",
                 provider="ollama",
