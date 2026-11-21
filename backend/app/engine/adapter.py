@@ -106,7 +106,7 @@ class EngineAdapter:
                 "state": AgentState | None,
             }
         """
-        model_config = config or ModelConfig()
+        model_config = config
         initial_state = self._create_initial_state(query, session_id=session_id or task_id)
         internal_queue: asyncio.Queue = asyncio.Queue()
 

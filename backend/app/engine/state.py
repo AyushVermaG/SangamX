@@ -22,20 +22,20 @@ class ModelConfig(BaseModel):
     """
 
     # Planner
-    planner_provider: str = "gemini"
-    planner_model: str = "gemini-2.0-flash-exp"
+    planner_provider: Optional[str] = None
+    planner_model: Optional[str] = None
     # Researcher
-    researcher_provider: str = "gemini"
-    researcher_model: str = "gemini-2.0-flash-exp"
+    researcher_provider: Optional[str] = None
+    researcher_model: Optional[str] = None
     # Analyst
-    analyst_provider: str = "gemini"
-    analyst_model: str = "gemini-2.0-flash-exp"
+    analyst_provider: Optional[str] = None
+    analyst_model: Optional[str] = None
     # Critic  — Groq by default (fast, free-tier)
-    critic_provider: str = "groq"
-    critic_model: str = "llama-3.1-8b-instant"
+    critic_provider: Optional[str] = None
+    critic_model: Optional[str] = None
     # Synthesizer
-    synthesizer_provider: str = "gemini"
-    synthesizer_model: str = "gemini-2.0-flash-exp"
+    synthesizer_provider: Optional[str] = None
+    synthesizer_model: Optional[str] = None
 
 
 class QueryRequest(BaseModel):

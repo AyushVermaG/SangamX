@@ -41,13 +41,17 @@ _STUB_MODULES = [
 
 for _mod in _STUB_MODULES:
     if _mod not in sys.modules:
-        sys.modules[_mod] = MagicMock()
+        try:
+            __import__(_mod)
+        except ImportError:
+            sys.modules[_mod] = MagicMock()
 
-# langgraph.graph needs sentinel constants that graph.py uses at import time.
-_lg_graph = sys.modules["langgraph.graph"]
-_lg_graph.END = "END"
-_lg_graph.START = "START"
-_lg_graph.StateGraph = MagicMock()
+# langgraph.graph needs sentinel constants that graph.py uses at import time if stubbed.
+if "langgraph.graph" in sys.modules and isinstance(sys.modules["langgraph.graph"], MagicMock):
+    _lg_graph = sys.modules["langgraph.graph"]
+    _lg_graph.END = "END"
+    _lg_graph.START = "START"
+    _lg_graph.StateGraph = MagicMock()
 
 # ---------------------------------------------------------------------------
 # Ensure fake API keys are set before any import that calls get_settings()

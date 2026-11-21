@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Optional
 
 from langgraph.graph import END, START, StateGraph
 
@@ -219,7 +219,7 @@ def _build_graph(queue: asyncio.Queue, config: ModelConfig, settings: Settings):
 async def run_graph(
     state: AgentState,
     queue: asyncio.Queue,
-    config: ModelConfig,
+    config: Optional[ModelConfig] = None,
 ) -> AgentState:
     """
     Entry point for the multi-agent graph execution.
@@ -242,19 +242,22 @@ async def run_graph(
             "All requests will use Ollama local fallback."
         )
 
-    # Merge per-request config with settings defaults so provider fields are populated.
-    # Fields in config take priority; unset fields fall back to settings defaults.
+    # Configuration precedence:
+    # 1. Explicit request overrides take priority.
+    # 2. Missing fields inherit from backend Settings (.env).
+    # 3. Application defaults apply when neither provides a value.
+    req_config = config or ModelConfig()
     merged = ModelConfig(
-        planner_provider=config.planner_provider or settings.planner_provider,
-        planner_model=config.planner_model or settings.planner_model,
-        researcher_provider=config.researcher_provider or settings.researcher_provider,
-        researcher_model=config.researcher_model or settings.researcher_model,
-        analyst_provider=config.analyst_provider or settings.analyst_provider,
-        analyst_model=config.analyst_model or settings.analyst_model,
-        critic_provider=config.critic_provider or settings.critic_provider,
-        critic_model=config.critic_model or settings.critic_model,
-        synthesizer_provider=config.synthesizer_provider or settings.synthesizer_provider,
-        synthesizer_model=config.synthesizer_model or settings.synthesizer_model,
+        planner_provider=req_config.planner_provider or getattr(settings, "planner_provider", None) or "gemini",
+        planner_model=req_config.planner_model or getattr(settings, "planner_model", None) or "gemini-2.0-flash-exp",
+        researcher_provider=req_config.researcher_provider or getattr(settings, "researcher_provider", None) or "gemini",
+        researcher_model=req_config.researcher_model or getattr(settings, "researcher_model", None) or "gemini-2.0-flash-exp",
+        analyst_provider=req_config.analyst_provider or getattr(settings, "analyst_provider", None) or "gemini",
+        analyst_model=req_config.analyst_model or getattr(settings, "analyst_model", None) or "gemini-2.0-flash-exp",
+        critic_provider=req_config.critic_provider or getattr(settings, "critic_provider", None) or "groq",
+        critic_model=req_config.critic_model or getattr(settings, "critic_model", None) or "llama-3.1-8b-instant",
+        synthesizer_provider=req_config.synthesizer_provider or getattr(settings, "synthesizer_provider", None) or "gemini",
+        synthesizer_model=req_config.synthesizer_model or getattr(settings, "synthesizer_model", None) or "gemini-2.0-flash-exp",
     )
 
     graph = _build_graph(queue, merged, settings)

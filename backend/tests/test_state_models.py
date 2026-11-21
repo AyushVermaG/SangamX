@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from app.engine.state import (
     AgentOutput,
     CriticVerdict,
+    ModelConfig,
     QueryRequest,
     StreamEvent,
     TaskStatusResponse,
@@ -42,6 +43,39 @@ def test_query_request_empty():
 def test_query_request_with_session_id():
     req = QueryRequest(query="Hello", session_id="abc-123")
     assert req.session_id == "abc-123"
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig
+# ---------------------------------------------------------------------------
+
+
+def test_model_config_defaults_are_none():
+    cfg = ModelConfig()
+    assert cfg.planner_provider is None
+    assert cfg.planner_model is None
+    assert cfg.researcher_provider is None
+    assert cfg.researcher_model is None
+    assert cfg.analyst_provider is None
+    assert cfg.analyst_model is None
+    assert cfg.critic_provider is None
+    assert cfg.critic_model is None
+    assert cfg.synthesizer_provider is None
+    assert cfg.synthesizer_model is None
+
+
+def test_model_config_explicit_overrides():
+    cfg = ModelConfig(
+        planner_provider="ollama",
+        planner_model="qwen3:4b",
+        critic_provider="gemini",
+    )
+    assert cfg.planner_provider == "ollama"
+    assert cfg.planner_model == "qwen3:4b"
+    assert cfg.critic_provider == "gemini"
+    assert cfg.critic_model is None
+    assert cfg.researcher_provider is None
+    assert cfg.synthesizer_model is None
 
 
 # ---------------------------------------------------------------------------

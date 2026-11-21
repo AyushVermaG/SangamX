@@ -527,3 +527,46 @@ async def test_adapter_exactly_once_terminal_event(adapter):
         q_events.append(ext_queue.get_nowait())
     assert len(q_events) == 1
     assert q_events[0]["event"] == "workflow_completed"
+
+
+async def test_adapter_preserves_none_config(adapter):
+    """Adapter passes config=None cleanly to run_graph without injecting defaults."""
+    passed_config = "SENTINEL"
+
+    async def capturing_run_graph(state, queue, config):
+        nonlocal passed_config
+        passed_config = config
+        return {**state, "final_answer": "Config verified"}
+
+    with patch("app.engine.adapter.run_graph", side_effect=capturing_run_graph):
+        result = await adapter.execute_task(
+            query="test config preservation",
+            config=None,
+            task_id="task-cfg-none",
+        )
+
+    assert result["status"] == "done"
+    assert passed_config is None
+
+
+async def test_adapter_preserves_explicit_config(adapter):
+    """Adapter passes explicit ModelConfig override directly to run_graph."""
+    passed_config = None
+    custom_config = ModelConfig(planner_provider="ollama", planner_model="qwen3:4b")
+
+    async def capturing_run_graph(state, queue, config):
+        nonlocal passed_config
+        passed_config = config
+        return {**state, "final_answer": "Explicit config verified"}
+
+    with patch("app.engine.adapter.run_graph", side_effect=capturing_run_graph):
+        result = await adapter.execute_task(
+            query="test explicit config",
+            config=custom_config,
+            task_id="task-cfg-explicit",
+        )
+
+    assert result["status"] == "done"
+    assert passed_config is custom_config
+    assert passed_config.planner_provider == "ollama"
+    assert passed_config.planner_model == "qwen3:4b"

@@ -35,7 +35,7 @@ async def run_engine_task(task_id: str, query_request: QueryRequest) -> None:
     and streams events into the central TaskStore.
     """
     await task_store.update_status(task_id, "running")
-    config = query_request.config or ModelConfig()
+    config = query_request.config
 
     async def _on_event(event_dict: dict[str, Any]) -> None:
         await task_store.add_event(task_id, event_dict)
