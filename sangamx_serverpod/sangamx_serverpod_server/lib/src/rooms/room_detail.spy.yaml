@@ -1,0 +1,5 @@
+class: RoomDetail
+fields:
+  room: Room
+  participants: List<RoomParticipant>
+  activeTask: SharedTask?

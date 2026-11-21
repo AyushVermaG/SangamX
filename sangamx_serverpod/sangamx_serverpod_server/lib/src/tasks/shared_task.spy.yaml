@@ -1,0 +1,16 @@
+class: SharedTask
+table: shared_task
+fields:
+  roomId: int, relation(parent=room, onDelete=Cascade)
+  query: String
+  status: String
+  fastapiTaskId: String?
+  finalAnswer: String?
+  error: String?
+  createdAt: DateTime
+  completedAt: DateTime?
+indexes:
+  shared_task_room_idx:
+    fields: roomId
+  shared_task_fastapi_idx:
+    fields: fastapiTaskId

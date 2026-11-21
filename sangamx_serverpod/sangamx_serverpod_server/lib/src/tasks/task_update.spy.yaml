@@ -1,0 +1,11 @@
+class: TaskUpdate
+fields:
+  taskId: int
+  roomId: int
+  status: String
+  event: String?
+  agent: String?
+  data: String?
+  finalAnswer: String?
+  error: String?
+  timestamp: DateTime

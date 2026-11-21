@@ -1,0 +1,6 @@
+class: RoomUpdate
+fields:
+  roomId: int
+  updateType: String
+  participant: RoomParticipant?
+  timestamp: DateTime
