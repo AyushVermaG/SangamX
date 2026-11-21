@@ -17,7 +17,7 @@ python-dotenv==1.2.4
 
 # LangGraph + LangChain core
 langgraph==0.2.60
-langchain-core==0.3.25
+langchain-core==0.3.33
 
 # Cloud providers (free tier)
 langchain-google-genai==2.0.7     # Gemini — primary

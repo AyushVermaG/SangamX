@@ -13,14 +13,14 @@ import pytest
 # Ensure fake API keys are set before any import that might call get_settings()
 # ---------------------------------------------------------------------------
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
-os.environ.setdefault("OPENAI_API_KEY", "test-key")
+os.environ.setdefault("GROQ_API_KEY", "test-key")
 
 
 @pytest.fixture(autouse=True)
 def _patch_api_keys(monkeypatch):
     """Force fake API keys for every test."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
 
 
 @pytest.fixture()
@@ -31,14 +31,14 @@ def mock_settings(monkeypatch):
 
     cfg.get_settings.cache_clear()
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
     settings = cfg.Settings(
         gemini_api_key="test-key",
-        openai_api_key="test-key",
+        groq_api_key="test-key",
         planner_model="gemini-2.0-flash-exp",
         researcher_model="gemini-2.0-flash-exp",
         analyst_model="gemini-2.0-flash-exp",
-        critic_model="gemini-2.0-flash-exp",
+        critic_model="llama-3.1-8b-instant",
         synthesizer_model="gemini-2.0-flash-exp",
         cors_origins="http://localhost:5173",
         log_level="INFO",

@@ -1,6 +1,10 @@
 """
 Tests for FastAPI health and engine API endpoints.
 Uses httpx.AsyncClient with ASGITransport.
+
+Root causes of previous staleness:
+  - Stale OPENAI_API_KEY env setup replaced with GROQ_API_KEY.
+  - test_engine_run_queued asserted status 200; the endpoint returns 202 (Accepted).
 """
 from __future__ import annotations
 
@@ -10,12 +14,12 @@ import pytest
 import pytest_asyncio
 
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
-os.environ.setdefault("OPENAI_API_KEY", "test-key")
+os.environ.setdefault("GROQ_API_KEY", "test-key")
 
 
 @pytest.mark.asyncio
 async def test_health_endpoint():
-    """GET /health should return {"status": "healthy"}."""
+    """GET /health should return {"status": "ok", "service": "sangamx-backend"}."""
     from httpx import ASGITransport, AsyncClient
 
     from main import app
@@ -23,7 +27,7 @@ async def test_health_endpoint():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "healthy"}
+    assert resp.json() == {"status": "ok", "service": "sangamx-backend"}
 
 
 @pytest.mark.asyncio
@@ -40,7 +44,7 @@ async def test_engine_run_validation():
 
 @pytest.mark.asyncio
 async def test_engine_run_queued():
-    """POST /api/v1/engine/run with valid query should return 200 with task_id."""
+    """POST /api/v1/engine/run with valid query should return 202 Accepted with task_id."""
     from unittest.mock import AsyncMock, patch
 
     from httpx import ASGITransport, AsyncClient
@@ -55,7 +59,7 @@ async def test_engine_run_queued():
                 "/api/v1/engine/run",
                 json={"query": "What is the capital of France?"},
             )
-    assert resp.status_code == 200
+    assert resp.status_code == 202  # 202 Accepted — task queued in background
     body = resp.json()
     assert "task_id" in body
     assert body["status"] == "queued"
