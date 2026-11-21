@@ -1,10 +1,10 @@
 # SangamX Serverpod 4 Integration Guide
 
-This document describes the verified integration architecture, endpoint APIs, event contracts, database migrations, and client setup instructions for connecting the **Flutter frontend**, **Serverpod 4 collaboration backend**, and the existing **FastAPI AI engine**.
+This document is the verified integration reference for the **Flutter frontend** (Divyanshu), the **Serverpod 4 collaboration backend**, and the **FastAPI AI engine** (Ayush).
 
 ---
 
-## 1. System Architecture
+## 1. Architecture Overview
 
 ```
 ┌─────────────────────────────────┐       ┌─────────────────────────────────┐
@@ -19,9 +19,9 @@ This document describes the verified integration architecture, endpoint APIs, ev
 │                     Serverpod 4 Collaboration Backend                     │
 │  - RoomEndpoint: createRoom, joinRoom, getRoom, watchRoom                 │
 │  - TaskEndpoint: submitTask, getTask, getActiveTask, watchTask            │
-│  - Message Central: Pub/Sub over room channel ('task_$roomId')            │
-│  - Concurrency Guard: DB Transaction preventing duplicate AI execution    │
-│  - PostgreSQL Database: Embedded / Docker on port 8090                    │
+│  - Message Central: In-memory pub/sub over 'task_$roomId' & 'room_$roomId'│
+│  - Concurrency Guard: DB Transaction preventing duplicate task execution  │
+│  - PostgreSQL Database: Port 8090                                         │
 └─────────────────────────────────────┬─────────────────────────────────────┘
                                       │
                                       │ HTTP POST /api/v1/engine/run
@@ -29,155 +29,114 @@ This document describes the verified integration architecture, endpoint APIs, ev
                                       ▼
 ┌───────────────────────────────────────────────────────────────────────────┐
 │                        FastAPI 5-Agent AI Engine                          │
-│  - LangGraph Execution: Planner → Researcher ‖ Analyst → Critic → Synth  │
-│  - SSE Stream: agent_start, agent_done, disagreement, final_answer, etc. │
+│  - LangGraph Execution: planner → researcher ‖ analyst → critic → synth   │
+│  - SSE Stream: agent_start, agent_done, disagreement, final_answer, etc.  │
 │  - Terminal Events: workflow_completed, workflow_failed, cancelled        │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Serverpod Endpoints & API Contract
+## 2. Prerequisites
 
-### A. RoomEndpoint (`client.room`)
-Location: `lib/src/rooms/room_endpoint.dart`
-
-#### 1. `createRoom`
-- **Method Signature:** `Future<Room> createRoom(Session session, String name)`
-- **Parameters:**
-  - `name` (`String`): Human-readable room title (e.g. `"AI Research Room"`).
-- **Return Type:** `Room`
-  - `id` (`int?`): Database primary key.
-  - `name` (`String`): Room title.
-  - `roomCode` (`String`): Unique 6-character alphanumeric join code (e.g. `"K3M9PQ"`).
-  - `createdAt` (`DateTime`): UTC creation timestamp.
-  - `isActive` (`bool`): `true`.
-
-#### 2. `joinRoom`
-- **Method Signature:** `Future<RoomDetail> joinRoom(Session session, String roomCode, String participantName)`
-- **Parameters:**
-  - `roomCode` (`String`): 6-character room code.
-  - `participantName` (`String`): Display name of participant.
-- **Return Type:** `RoomDetail`
-  - `room` (`Room`): Room record.
-  - `participants` (`List<RoomParticipant>`): List of active participants with `isOnline: true`.
-  - `activeTask` (`SharedTask?`): Currently running or queued task in the room (if any).
-- **Real-time Side Effect:** Broadcasts `RoomUpdate(updateType: 'participant_joined', participant: ...)` on channel `'room_$roomId'`.
-
-#### 3. `getRoom`
-- **Method Signature:** `Future<RoomDetail> getRoom(Session session, int roomId)`
-- **Parameters:**
-  - `roomId` (`int`): Primary key of the room.
-- **Return Type:** `RoomDetail`: Up-to-date metadata, participant roster, and active task.
-
-#### 4. `watchRoom`
-- **Method Signature:** `Stream<RoomUpdate> watchRoom(Session session, int roomId)`
-- **Parameters:**
-  - `roomId` (`int`): Room to observe.
-- **Return Type:** `Stream<RoomUpdate>`
-  - `roomId` (`int`)
-  - `updateType` (`String`): `'participant_joined'` | `'participant_left'`
-  - `participant` (`RoomParticipant?`)
-  - `timestamp` (`DateTime`)
+* **Operating System:** Windows 10/11, macOS, or Linux.
+* **Dart SDK:** `^3.12.2` (Verified with Dart `3.14.0` / Flutter SDK at `C:\src\flutter`).
+* **Serverpod CLI:** `4.1.2` (`dart pub global activate serverpod_cli 4.1.2`).
+* **Python:** `3.11+` or `3.12+` with virtual environment (`backend/.venv`).
+* **PostgreSQL:** Serverpod embedded database or PostgreSQL 14+ on port `8090`.
 
 ---
 
-### B. TaskEndpoint (`client.task`)
-Location: `lib/src/tasks/task_endpoint.dart`
+## 3. PostgreSQL Setup
 
-#### 1. `submitTask`
-- **Method Signature:** `Future<SharedTask> submitTask(Session session, int roomId, String query)`
-- **Parameters:**
-  - `roomId` (`int`): Room to execute the workflow in.
-  - `query` (`String`): User research question / prompt.
-- **Return Type:** `SharedTask`
-  - `id` (`int?`): Serverpod task ID.
-  - `roomId` (`int`): Room ID.
-  - `query` (`String`): Cleaned query prompt.
-  - `status` (`String`): `'queued'` (initial status).
-  - `fastapiTaskId` (`String?`): Null on insert; updated to FastAPI UUID once spawned.
-  - `createdAt` (`DateTime`): UTC creation timestamp.
-- **Duplicate Execution Prevention:**
-  - Executes inside a PostgreSQL `session.db.transaction`.
-  - Checks for existing task in `roomId` with `status IN ('queued', 'running')`.
-  - Throws `FormatException('A task is already running in room $roomId (Task #X).')` if a conflict exists.
-- **Asynchronous Execution:** Launches `FastApiBridgeService.execute` in the background via `unawaited(...)`.
+Serverpod runs its development database on port `8090` using either its built-in embedded database or Docker.
 
-#### 2. `getTask`
-- **Method Signature:** `Future<SharedTask?> getTask(Session session, int taskId)`
-- **Parameters:**
-  - `taskId` (`int`): Task primary key.
-- **Return Type:** `SharedTask?` (including `finalAnswer`, `error`, `completedAt`).
-
-#### 3. `getActiveTask`
-- **Method Signature:** `Future<SharedTask?> getActiveTask(Session session, int roomId)`
-- **Parameters:**
-  - `roomId` (`int`): Room to query.
-- **Return Type:** `SharedTask?`: Returns active task if `status == 'queued' || status == 'running'`.
-
-#### 4. `watchTask`
-- **Method Signature:** `Stream<TaskUpdate> watchTask(Session session, int roomId)`
-- **Validation:** Verifies room exists and is active before opening stream; throws `FormatException` otherwise.
-- **Return Type:** `Stream<TaskUpdate>` (broadcast stream over channel `'task_$roomId'`).
+### Start Embedded PostgreSQL (Windows PowerShell)
+In Terminal 1:
+```powershell
+cd C:\SangamX-serverpod-worktree\sangamx_serverpod\sangamx_serverpod_server
+$env:PATH = "C:\src\flutter\bin;$env:LOCALAPPDATA\Pub\Cache\bin;$env:PATH"
+serverpod database start
+```
+* Status verification: Port `8090` is listening and accepting connections.
+* Database name: `sangamx_serverpod` (or as configured in `config/development.yaml`).
 
 ---
 
-## 3. Real-Time Event Model (`TaskUpdate`)
+## 4. Serverpod Setup and Migrations
 
-Each event received by `client.task.watchTask(roomId)` contains:
+### A. Resolve Dependencies
+```powershell
+cd C:\SangamX-serverpod-worktree\sangamx_serverpod
+$env:PATH = "C:\src\flutter\bin;$env:LOCALAPPDATA\Pub\Cache\bin;$env:PATH"
+dart pub get
+```
 
-| Field | Type | Description |
-|---|---|---|
-| `taskId` | `int` | Serverpod primary key of the task |
-| `roomId` | `int` | Room ID associated with the task |
-| `status` | `String` | `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` |
-| `event` | `String` | Event discriminator (see table below) |
-| `agent` | `String?` | Name of AI agent emitting event (e.g. `'PlannerAgent'`, `'ResearcherAgent'`) |
-| `data` | `String?` | JSON-encoded payload containing event attributes |
-| `finalAnswer` | `String?` | Available when `event == 'final_answer'` or `'workflow_completed'` |
-| `error` | `String?` | Failure error message if `event == 'workflow_failed'` |
-| `timestamp` | `DateTime` | UTC event timestamp |
+### B. Code Generation (when schema or endpoints change)
+From the server directory:
+```powershell
+cd C:\SangamX-serverpod-worktree\sangamx_serverpod\sangamx_serverpod_server
+$env:PATH = "C:\src\flutter\bin;$env:LOCALAPPDATA\Pub\Cache\bin;$env:PATH"
+serverpod generate
+```
+This updates:
+* `sangamx_serverpod_server/lib/src/generated/`
+* `sangamx_serverpod_client/lib/src/protocol/` (including `client.dart` and `protocol.dart`).
 
-### Event Sequence:
-1. `task_started`: Serverpod bridge submitted task to FastAPI; status transitioned to `running`.
-2. `agent_start`: An agent begins execution (`PlannerAgent`, `ResearcherAgent`, `AnalystAgent`, `CriticAgent`, `SynthesisAgent`).
-3. `agent_done`: An agent completed its step.
-4. `disagreement`: Critic detected contradiction between researcher and analyst outputs.
-5. `final_answer`: Synthesis agent generated final merged answer.
-6. `workflow_completed`: Terminal event indicating successful completion.
-7. `workflow_failed`: Terminal event indicating workflow error or unexpected stream disconnect.
+### C. Apply Database Migrations (Maintenance Mode)
+```powershell
+cd C:\SangamX-serverpod-worktree\sangamx_serverpod\sangamx_serverpod_server
+$env:PATH = "C:\src\flutter\bin;$env:LOCALAPPDATA\Pub\Cache\bin;$env:PATH"
+dart run bin/main.dart --role maintenance --apply-migrations
+```
 
----
-
-## 4. FastAPI Bridge Mapping & Failure Guard
-
-- **Endpoint Mapping:**
-  - Serverpod forwards `query` and maps `session_id` to `'room_$roomId'` via `POST /api/v1/engine/run`.
-  - Serverpod opens SSE stream `GET /api/v1/engine/stream/{task_id}`.
-- **Premature Disconnect Guard:**
-  - If the FastAPI SSE stream drops or terminates before emitting a terminal event, `FastApiBridgeService` catches the disconnect, marks `SharedTask.status = 'failed'`, records `'FastAPI SSE stream closed unexpectedly before workflow conclusion.'`, and broadcasts `workflow_failed` to Message Central. Tasks are never left indefinitely in `'running'`.
-
----
-
-## 5. PostgreSQL Database & Migrations
-
-### Database Schema
-- **`room`**: `id` (bigserial PK), `name` (text), `roomCode` (text UNIQUE), `createdAt` (timestamp), `isActive` (boolean).
-- **`room_participant`**: `id` (bigserial PK), `roomId` (bigint FK -> room.id ON DELETE CASCADE), `participantName` (text), `joinedAt` (timestamp), `isOnline` (boolean).
-- **`shared_task`**: `id` (bigserial PK), `roomId` (bigint FK -> room.id ON DELETE CASCADE), `query` (text), `status` (text), `fastapiTaskId` (text NULL), `finalAnswer` (text NULL), `error` (text NULL), `createdAt` (timestamp), `completedAt` (timestamp NULL).
-
-### Migrations List:
-1. `20261121210633210`: Core Serverpod tables.
+Existing migrations:
+1. `20261121210633210`: Serverpod core infrastructure tables.
 2. `20261121211022791`: `room` and `room_participant` tables.
-3. `20261121212443648`: `shared_task` table and foreign key relations.
+3. `20261121212443648`: `shared_task` table with foreign key indices.
+
+### D. Start Serverpod Collaboration Server (Port 8080)
+In Terminal 2:
+```powershell
+cd C:\SangamX-serverpod-worktree\sangamx_serverpod\sangamx_serverpod_server
+$env:PATH = "C:\src\flutter\bin;$env:LOCALAPPDATA\Pub\Cache\bin;$env:PATH"
+dart run bin/main.dart
+```
+* Server starts on `http://0.0.0.0:8080` (HTTP and WebSockets).
 
 ---
 
-## 6. Flutter Client Integration (for Divyanshu)
+## 5. FastAPI Setup and Bridge Configuration
 
-### A. Dependency Declaration (`pubspec.yaml`)
-In your Flutter project `pubspec.yaml`:
+### A. Start FastAPI AI Engine (Port 8000)
+In Terminal 3:
+```powershell
+cd C:\SangamX-serverpod-worktree\backend
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
+```
 
+### B. Serverpod Bridge Configuration
+* **Environment Variable:** `FASTAPI_BASE_URL` (Optional, defaults to `http://127.0.0.1:8000`).
+* **Session Mapping:** When submitting a task, Serverpod maps the room to FastAPI via `session_id: 'room_$roomId'`:
+  ```json
+  POST /api/v1/engine/run
+  {
+    "query": "<user_query>",
+    "session_id": "room_1"
+  }
+  ```
+* **Failure Guard for Interrupted SSE Streams:** If FastAPI's SSE stream closes unexpectedly before emitting `workflow_completed`, `workflow_failed`, or `cancelled`, Serverpod catches the premature closure, updates `SharedTask.status = 'failed'`, records `'FastAPI SSE stream closed unexpectedly before workflow conclusion.'`, and broadcasts `workflow_failed` to `task_$roomId`.
+
+---
+
+## 6. Generated Flutter Client Installation
+
+The client package is located at:
+`sangamx_serverpod/sangamx_serverpod_client`
+
+### Flutter `pubspec.yaml` Configuration
+Add the local package to your Flutter project:
 ```yaml
 dependencies:
   flutter:
@@ -187,14 +146,24 @@ dependencies:
     path: ../sangamx_serverpod/sangamx_serverpod_client
 ```
 
-### B. Client Initialization
+Run:
+```bash
+flutter pub get
+```
+
+---
+
+## 7. Client Initialization
+
+Import the generated package entrypoint in your Flutter code:
+
 ```dart
 import 'package:sangamx_serverpod_client/sangamx_serverpod_client.dart';
 import 'package:serverpod_flutter/serverpod_flutter.dart';
 
-// Use your host machine's Wi-Fi IP for physical devices (e.g. 'http://192.168.1.50:8080/')
-// Use 'http://10.0.2.2:8080/' for Android Emulator
-// Use 'http://127.0.0.1:8080/' for iOS Simulator / Desktop
+// Host machine IP for physical test devices on LAN
+// Android Emulator: 'http://10.0.2.2:8080/'
+// iOS Simulator / Desktop / Web: 'http://127.0.0.1:8080/'
 const serverUrl = 'http://192.168.1.50:8080/';
 
 late Client client;
@@ -206,97 +175,216 @@ void initServerpodClient() {
 }
 ```
 
-### C. Host: Create Room & Subscribe
-```dart
-// 1. Create Room
-final room = await client.room.createRoom('War Room');
-print('Share this 6-character code with teammate: ${room.roomCode}');
-
-// 2. Watch for participant joins
-client.room.watchRoom(room.id!).listen((update) {
-  if (update.updateType == 'participant_joined') {
-    print('${update.participant?.participantName} entered the room!');
-  }
-});
-
-// 3. Watch for live task AI events
-final subscription = client.task.watchTask(room.id!).listen((update) {
-  print('[${update.status}] ${update.event} (Agent: ${update.agent})');
-  if (update.finalAnswer != null) {
-    print('Final Answer: ${update.finalAnswer}');
-  }
-});
-```
-
-### D. Collaborator: Join Room & Submit Task
-```dart
-// 1. Join room using room code
-final detail = await client.room.joinRoom('A8B9C0', 'Divyanshu');
-print('Joined room: ${detail.room.name} (ID: ${detail.room.id})');
-
-// 2. Watch task events
-client.task.watchTask(detail.room.id!).listen((update) {
-  if (update.event == 'agent_start') {
-    print('Agent ${update.agent} started...');
-  } else if (update.event == 'workflow_completed') {
-    print('Synthesized Result: ${update.finalAnswer}');
-  }
-});
-
-// 3. Submit research query
-final task = await client.task.submitTask(
-  detail.room.id!,
-  'Compare LangGraph with AutoGen for multi-agent workflows',
-);
-print('Task submitted with ID: ${task.id}');
-```
-
-### E. Unsubscribe & Cleanup
-```dart
-// Always cancel stream subscriptions when leaving room screens
-await subscription.cancel();
-```
+The `client` instance provides direct typed access to:
+* `client.room`: Room creation, joining, info, and event streaming.
+* `client.task`: Task submission, polling, active task lookup, and event streaming.
+* `client.greeting`: Health check endpoint.
 
 ---
 
-## 7. Startup Instructions
+## 8. Endpoint Reference
 
-### 1. Embedded PostgreSQL Database
-In Windows PowerShell (Terminal 1):
-```powershell
-cd sangamx_serverpod\sangamx_serverpod_server
-$env:PATH = "C:\src\flutter\bin;$env:LOCALAPPDATA\Pub\Cache\bin;$env:PATH"
-serverpod database start
-```
-*(Leave running in foreground. Listens on `127.0.0.1:8090`)*
+### A. RoomEndpoint (`client.room`)
 
-### 2. Apply Database Migrations (Maintenance Mode)
-In Windows PowerShell:
-```powershell
-cd sangamx_serverpod\sangamx_serverpod_server
-$env:PATH = "C:\src\flutter\bin;$env:LOCALAPPDATA\Pub\Cache\bin;$env:PATH"
-dart run bin/main.dart --role maintenance --apply-migrations
-```
+#### 1. `createRoom`
+* **Dart Signature:** `Future<Room> createRoom(String name)`
+* **Parameters:**
+  * `name` (`String`): Room title.
+* **Returns:** `Room`
+  * `id` (`int?`): Primary key.
+  * `name` (`String`): Room title.
+  * `roomCode` (`String`): Unique 6-character alphanumeric code (e.g. `'K8M9PQ'`).
+  * `createdAt` (`DateTime`): UTC creation timestamp.
+  * `isActive` (`bool`): `true`.
 
-### 3. Start FastAPI AI Engine (Port 8000)
-In Windows PowerShell (Terminal 2):
-```powershell
-cd backend
-.venv\Scripts\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000
-```
+#### 2. `joinRoom`
+* **Dart Signature:** `Future<RoomDetail> joinRoom(String roomCode, String participantName)`
+* **Parameters:**
+  * `roomCode` (`String`): 6-character room code.
+  * `participantName` (`String`): Display name of participant.
+* **Returns:** `RoomDetail`
+  * `room` (`Room`): Room metadata.
+  * `participants` (`List<RoomParticipant>`): All participants in the room.
+  * `activeTask` (`SharedTask?`): Current queued or running task, if one exists.
+* **Side Effect:** Broadcasts `RoomUpdate(updateType: 'participant_joined')` to `room_$roomId`.
 
-### 4. Start Serverpod Collaboration Server (Port 8080)
-In Windows PowerShell (Terminal 3):
-```powershell
-cd sangamx_serverpod\sangamx_serverpod_server
-$env:PATH = "C:\src\flutter\bin;$env:LOCALAPPDATA\Pub\Cache\bin;$env:PATH"
-dart run bin/main.dart
-```
+#### 3. `getRoom`
+* **Dart Signature:** `Future<RoomDetail> getRoom(int roomId)`
+* **Parameters:**
+  * `roomId` (`int`): Room database ID.
+* **Returns:** `RoomDetail` (latest room metadata, participant roster, and active task).
 
-### 5. Running the Two-Device Demo
-1. Ensure both devices and the host machine are connected to the same local network / Wi-Fi.
-2. Device 1 (Host) opens Flutter app, taps **Create Room**, enters `"Sprint Planning"`, and sees code `XYZ123`.
-3. Device 2 (Collaborator) taps **Join Room**, enters code `XYZ123` and name `"Divyanshu"`.
-4. Device 1 immediately shows `"Divyanshu joined the room"`.
-5. Device 1 or 2 types a query (e.g. `"Analyze quantum entanglement"`) and taps **Run**.
-6. Both devices stream and display agent progress (`PlannerAgent`, `ResearcherAgent`, `AnalystAgent`, `CriticAgent`, `SynthesisAgent`) and final synthesized answer simultaneously in real time.
+#### 4. `watchRoom`
+* **Dart Signature:** `Stream<RoomUpdate> watchRoom(int roomId)`
+* **Parameters:**
+  * `roomId` (`int`): Room database ID.
+* **Returns:** `Stream<RoomUpdate>`
+  * `roomId` (`int`): Target room.
+  * `updateType` (`String`): `'participant_joined'`.
+  * `participant` (`RoomParticipant?`): The participant details.
+  * `timestamp` (`DateTime`): UTC event time.
+
+---
+
+### B. TaskEndpoint (`client.task`)
+
+#### 1. `submitTask`
+* **Dart Signature:** `Future<SharedTask> submitTask(int roomId, String query)`
+* **Parameters:**
+  * `roomId` (`int`): Target room.
+  * `query` (`String`): Research question / prompt.
+* **Returns:** `SharedTask`
+  * `id` (`int?`): Task database ID.
+  * `roomId` (`int`): Room ID.
+  * `query` (`String`): Trimmed query text.
+  * `status` (`String`): `'queued'`.
+  * `createdAt` (`DateTime`): UTC timestamp.
+* **Concurrency Check:** Enforces exactly one active task (`'queued'` or `'running'`) per room inside a database transaction. Throws `FormatException` if another task is active.
+
+#### 2. `getTask`
+* **Dart Signature:** `Future<SharedTask?> getTask(int taskId)`
+* **Parameters:**
+  * `taskId` (`int`): Task database ID.
+* **Returns:** `SharedTask?` with `finalAnswer`, `error`, `status`, and `completedAt`.
+
+#### 3. `getActiveTask`
+* **Dart Signature:** `Future<SharedTask?> getActiveTask(int roomId)`
+* **Parameters:**
+  * `roomId` (`int`): Target room.
+* **Returns:** `SharedTask?` if a task is currently `'queued'` or `'running'`, or `null` if idle.
+
+#### 4. `watchTask`
+* **Dart Signature:** `Stream<TaskUpdate> watchTask(int roomId)`
+* **Parameters:**
+  * `roomId` (`int`): Target room.
+* **Returns:** `Stream<TaskUpdate>` (live broadcast stream over channel `'task_$roomId'`).
+
+---
+
+## 9. Real-Time Event Payload Reference
+
+The `TaskUpdate` stream emitted by `client.task.watchTask(roomId)` contains:
+
+| Field | Dart Type | Description |
+|---|---|---|
+| `taskId` | `int` | Primary key of the `SharedTask` |
+| `roomId` | `int` | Room ID |
+| `status` | `String` | Task status: `'running'`, `'completed'`, `'failed'`, `'cancelled'` |
+| `event` | `String?` | Event name (see table below) |
+| `agent` | `String?` | Agent identifier in **exact lower case** (e.g. `'planner'`, `'researcher'`) |
+| `data` | `String?` | JSON-encoded payload containing event attributes |
+| `finalAnswer` | `String?` | Merged synthesis answer (present on `'final_answer'` and `'workflow_completed'`) |
+| `error` | `String?` | Error description if status is `'failed'` |
+| `timestamp` | `DateTime` | UTC timestamp |
+
+### Verified Event Types and Agent Identifiers
+
+All agent identifiers from FastAPI are emitted in **exact lowercase**:
+
+| Event Type (`event`) | Emitting Agent (`agent`) | Payload Data (`data`) | Description |
+|---|---|---|---|
+| `task_started` | `null` | `{}` | Bridge dispatched task to FastAPI |
+| `agent_start` | `'planner'` | `{"message": "Planner decomposing query…"}` | Planner node started |
+| `agent_done` | `'planner'` | `{"approach": "...", "complexity": "...", "tasks_count": N}` | Planner plan constructed |
+| `agent_start` | `'researcher'` | `{"message": "Researcher starting…"}` | Parallel researcher started |
+| `agent_start` | `'analyst'` | `{"message": "Analyst starting…"}` | Parallel analyst started |
+| `agent_done` | `'researcher'` | `{"preview": "..."}` | Researcher completed |
+| `agent_done` | `'analyst'` | `{"preview": "..."}` | Analyst completed |
+| `agent_start` | `'critic'` | `{"message": "Critic evaluating outputs…"}` | Critic review started |
+| `agent_done` | `'critic'` | `{"agree": true/false, "confidence": float, "reason": "..."}` | Critic verdict rendered |
+| `disagreement` | `null` | `{"reason": "...", "confidence": float}` | Emitted when critic detects dispute |
+| `revision_start` | `null` | `{"reason": "...", "round": N}` | Revision loop re-executing |
+| `agent_start` | `'synthesizer'` | `{"message": "Synthesizer generating final answer…"}` | Synthesis started |
+| `final_answer` | `'synthesizer'` | `{"content": "...", "preview": "..."}` | Answer generated |
+| `agent_done` | `'synthesizer'` | `{"message": "Done."}` | Synthesizer finished |
+| `workflow_completed` | `null` | `{"final_answer": "..."}` | Terminal success event |
+| `workflow_failed` | `null` | `{"error": "...", "message": "..."}` | Terminal error event |
+| `cancelled` | `null` | `{"message": "Task was cancelled by user"}` | Task cancelled |
+
+---
+
+## 10. Room Participation and Authorization
+
+* **Access Model:** Any client possessing the valid 6-character `roomCode` can call `joinRoom(roomCode, participantName)`.
+* **Roster Tracking:** Each participant is stored in `RoomParticipant` with `roomId`, `participantName`, `joinedAt`, and `isOnline: true`.
+* **Join Notification:** `joinRoom` broadcasts `RoomUpdate(updateType: 'participant_joined', participant: ...)` over channel `'room_$roomId'`.
+* **Departure Behavior (MVP Limitation):**
+  * `leaveRoom` is **NOT implemented** in the hackathon MVP.
+  * Disconnecting from WebSockets does **NOT** automatically evict participant records or set `isOnline = false`.
+  * The event `'participant_left'` is **NOT emitted**. Participants remain listed in `RoomDetail.participants`.
+
+---
+
+## 11. Reconnection and Event History
+
+### How Serverpod Message Central Works
+* Serverpod's `session.messages.createStream` is an **in-memory pub/sub broker**.
+* It does **NOT** persist historical streaming events or buffer past messages.
+* When a Flutter client connects or reconnects to `watchTask` or `watchRoom`, it only receives events published *after* the stream subscription opens.
+
+### State Recovery Strategy for Reconnecting Clients
+To recover state upon reconnecting or opening a room screen:
+1. **Recover Room & Roster:** Call `client.room.getRoom(roomId)`.
+   * Returns `RoomDetail` with the full `Room`, all `RoomParticipant`s, and the current `activeTask`.
+2. **Recover Task State & Final Answer:**
+   * If `activeTask` is not null, its `id`, `status` (`'queued'`, `'running'`), and `query` are immediately known.
+   * To check if a previous task finished while the client was disconnected: call `client.task.getTask(taskId)`. This queries PostgreSQL and retrieves `finalAnswer`, `status`, `error`, and `completedAt`.
+3. **Resume Live Stream:** Open `client.task.watchTask(roomId)` to receive any subsequent live progress and the terminal `workflow_completed` event.
+
+---
+
+## 12. Duplicate Execution Prevention
+
+SangamX enforces strict concurrency control to prevent multiple AI agent workflows from running in the same room simultaneously:
+
+1. **Transaction Isolation:** In `task_endpoint.dart`, `submitTask` runs inside:
+   ```dart
+   await session.db.transaction<SharedTask>((transaction) async { ... });
+   ```
+2. **Active Task Check:** Queries PostgreSQL for any existing task in `roomId` with `status IN ('queued', 'running')`.
+3. **Rejection:** If an active task is found, it throws `FormatException('A task is already running in room $roomId (Task #X).')`.
+4. **Single Background Execution:** The background bridge is only triggered after the task row is successfully committed.
+
+---
+
+## 13. Two-Device Testing Instructions
+
+### Step 1: Network & URL Configuration
+* Ensure the host PC and both mobile devices are connected to the same local Wi-Fi.
+* Find host IP: run `ipconfig` (e.g. `192.168.1.50`).
+* In the Flutter app, initialize Serverpod with:
+  ```dart
+  final client = Client('http://192.168.1.50:8080/')..connectivityMonitor = FlutterConnectivityMonitor();
+  ```
+
+### Step 2: Device A (Host Device)
+1. Open Flutter app -> Tap **Create Room**.
+2. Enter room name `"SangamX Demo"`.
+3. The app displays the generated 6-character room code (e.g. `"K7M2PQ"`).
+4. Device A subscribes to `client.room.watchRoom(roomId)` and `client.task.watchTask(roomId)`.
+
+### Step 3: Device B (Collaborator Device)
+1. Open Flutter app -> Tap **Join Room**.
+2. Enter room code `"K7M2PQ"` and participant name `"Divyanshu"`.
+3. App calls `client.room.joinRoom('K7M2PQ', 'Divyanshu')`.
+4. **Instant Verification:** Device A's screen receives `RoomUpdate('participant_joined')` and immediately shows `"Divyanshu joined the room"`.
+
+### Step 4: Execute Collaborative AI Task
+1. From either Device A or Device B, enter research query:
+   `"Analyze benefits of edge computing over cloud computing"`
+2. Tap **Submit Task**.
+3. Both devices immediately receive `TaskUpdate` events over `watchTask`:
+   * `planner`: `"Planner decomposing query…"`
+   * `researcher` & `analyst`: Concurrent progress
+   * `critic`: Evaluates outputs
+   * `synthesizer`: Synthesizes final answer
+   * `workflow_completed`: Both devices render the identical final answer simultaneously.
+
+---
+
+## 14. Known Limitations
+
+1. **No Participant Departure (`leaveRoom`):** No endpoint or automatic socket lifecycle hook exists to set `isOnline = false` or emit `participant_left`. Roster is append-only in MVP.
+2. **Ephemeral Stream Events:** Intermediate agent progress logs are not stored in PostgreSQL. If a client disconnects mid-workflow, it will not see missed intermediate log lines, but it can fetch the final answer via `client.task.getTask(taskId)`.
+3. **Single Task per Room:** A room cannot execute concurrent tasks; subsequent submissions must wait until the running task completes or fails.
+4. **FastAPI Replay Scope:** FastAPI SSE replay is stored in-memory in `task_store`; restarting the FastAPI process clears in-flight task history.
