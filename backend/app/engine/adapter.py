@@ -54,6 +54,8 @@ class EngineAdapter:
     ) -> None:
         self.settings = settings or get_settings()
         self._run_graph = run_graph_func
+        # Internal reference to the most recent consumer task (used for test lifecycle verification)
+        self._last_consumer_task: Optional[asyncio.Task] = None
 
     @staticmethod
     def _create_initial_state(

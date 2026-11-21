@@ -282,8 +282,15 @@ async def test_parent_task_cancellation_terminates_and_awaits_consumer(adapter):
 
 async def test_cancellation_shield_await_bounded_deadline(adapter):
     """
-    Verifies that when a parent task is cancelled while the consumer is awaiting inside an event callback,
-    the consumer task receives cancellation, terminates cleanly without deadlocking, and CancelledError propagates.
+    Verifies that when a parent task is cancelled while the consumer is awaiting inside a cooperative callback:
+    1. The consumer task receives cancellation and terminates cleanly without deadlocking.
+    2. CancelledError propagates to the parent caller.
+    3. The consumer task is awaited to completion (done=True).
+
+    Note: In Python asyncio, cancellation is cooperative. If an external callback is cancellation-resistant
+    (i.e. catches and suppresses CancelledError or blocks synchronously), Python provides no mechanism to
+    forcefully kill the task. The adapter's 5-second bounded deadline guarantees the backend will not hang
+    indefinitely, but such uncooperative tasks would remain pending in the event loop.
     """
     callback_entered = asyncio.Event()
 
