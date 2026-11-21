@@ -1,59 +1,24 @@
+
 """
 Integration-style tests for the full LangGraph flow.
 All LLM calls are mocked; no real API keys needed.
-
-Root causes of previous staleness:
-  - Patched `app.engine.graph.run_planner` etc. — these names are NOT importable
-    at graph module level; they are lazy-imported inside node closures using
-    `from app.engine.agents.X import run_X`. Patches must target the source module.
-  - run_graph() now requires (state: AgentState, queue: asyncio.Queue, config: ModelConfig).
-    Old tests called run_graph("query") with a bare string.
-  - Mock return values were wrong: nodes call the agent functions and use their
-    return values directly. run_planner → dict, run_researcher/analyst → AgentOutput,
-    detect_disagreement → CriticVerdict, run_synthesizer → str.
-  - Stale OPENAI_API_KEY env setup replaced with GROQ_API_KEY.
-
-NOTE: These tests require `langgraph` and `langchain-core` to be installed.
-      They are skipped automatically when those packages are unavailable.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 os.environ.setdefault("GROQ_API_KEY", "test-key")
 
-# ---------------------------------------------------------------------------
-# Skip entire module if langgraph is not installed
-# ---------------------------------------------------------------------------
-langgraph = pytest.importorskip(
-    "langgraph",
-    reason="langgraph not installed — run `pip install langgraph` to enable graph tests",
-)
+# Skip graph tests if LangGraph is not installed.
+pytest.importorskip("langgraph")
 
-from app.engine.state import AgentOutput, CriticVerdict, ModelConfig, AgentState
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_agent_output(agent: str) -> AgentOutput:
-    return AgentOutput(agent=agent, content=f"{agent} output.", timestamp=datetime.utcnow())
-
-
-def _make_verdict(agree: bool) -> CriticVerdict:
-    return CriticVerdict(
-        agree=agree,
-        reason="Agree." if agree else "Disagree.",
-        confidence=0.9 if agree else 0.7,
-    )
+from app.engine.state import AgentOutput, AgentState, CriticVerdict, ModelConfig
 
 
 def _initial_state(query: str = "What is the capital of France?") -> AgentState:
@@ -71,43 +36,68 @@ def _initial_state(query: str = "What is the capital of France?") -> AgentState:
     )
 
 
-PLAN = {"tasks": [], "approach": "Research first.", "complexity": "low"}
+def _make_agent_output(agent: str) -> AgentOutput:
+    return AgentOutput(
+        agent=agent,
+        content=f"{agent} output.",
+        timestamp=datetime.utcnow(),
+    )
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+def _make_verdict(agree: bool) -> CriticVerdict:
+    return CriticVerdict(
+        agree=agree,
+        reason="Agree." if agree else "Disagree.",
+        confidence=0.9 if agree else 0.7,
+    )
+
+
+PLAN = {
+    "tasks": [],
+    "approach": "Research first.",
+    "complexity": "low",
+}
 
 
 @pytest.mark.asyncio
 async def test_full_graph_flow():
-    """
-    Mock all agent functions at their source modules.
-    run_graph should populate final_answer in the returned state.
-    """
+    """The complete graph should produce a final answer."""
     from app.engine.graph import run_graph
 
     research_out = _make_agent_output("researcher")
     analyst_out = _make_agent_output("analyst")
     agree_verdict = _make_verdict(agree=True)
 
-    queue: asyncio.Queue = asyncio.Queue()
+    queue = asyncio.Queue()
     config = ModelConfig()
 
     with (
-        patch("app.engine.agents.planner.run_planner", new_callable=AsyncMock) as mock_plan,
-        patch("app.engine.agents.researcher.run_researcher", new_callable=AsyncMock) as mock_res,
-        patch("app.engine.agents.analyst.run_analyst", new_callable=AsyncMock) as mock_ana,
-        patch("app.engine.graph.detect_disagreement", new_callable=AsyncMock) as mock_crit,
-        patch("app.engine.agents.synthesizer.run_synthesizer", new_callable=AsyncMock) as mock_syn,
+        patch(
+            "app.engine.agents.planner.run_planner",
+            new_callable=AsyncMock,
+            return_value=PLAN,
+        ),
+        patch(
+            "app.engine.agents.researcher.run_researcher",
+            new_callable=AsyncMock,
+            return_value=research_out,
+        ),
+        patch(
+            "app.engine.agents.analyst.run_analyst",
+            new_callable=AsyncMock,
+            return_value=analyst_out,
+        ),
+        patch(
+            "app.engine.graph.detect_disagreement",
+            new_callable=AsyncMock,
+            return_value=agree_verdict,
+        ),
+        patch(
+            "app.engine.agents.synthesizer.run_synthesizer",
+            new_callable=AsyncMock,
+            return_value="Paris is the capital of France.",
+        ),
     ):
-        # Return types must match what each node actually expects from the agent function
-        mock_plan.return_value = PLAN
-        mock_res.return_value = research_out
-        mock_ana.return_value = analyst_out
-        mock_crit.return_value = agree_verdict
-        mock_syn.return_value = "Paris is the capital of France."
-
         result = await run_graph(_initial_state(), queue, config)
 
     assert result.get("final_answer") is not None
@@ -116,112 +106,207 @@ async def test_full_graph_flow():
 
 @pytest.mark.asyncio
 async def test_revision_round_triggered():
-    """
-    When the critic returns agree=False on the first round,
-    revision_count should increment and critic is called again.
-    """
+    """A disagreement should trigger one revision round."""
     from app.engine.graph import run_graph
 
     research_out = _make_agent_output("researcher")
     analyst_out = _make_agent_output("analyst")
+
     disagree_verdict = _make_verdict(agree=False)
     agree_verdict = _make_verdict(agree=True)
 
-    # Critic disagrees first, agrees on second call
-    mock_crit = AsyncMock(side_effect=[disagree_verdict, agree_verdict])
+    mock_crit = AsyncMock(
+        side_effect=[disagree_verdict, agree_verdict]
+    )
 
-    queue: asyncio.Queue = asyncio.Queue()
+    queue = asyncio.Queue()
     config = ModelConfig()
 
     with (
-        patch("app.engine.agents.planner.run_planner", new_callable=AsyncMock,
-              return_value=PLAN),
-        patch("app.engine.agents.researcher.run_researcher", new_callable=AsyncMock,
-              return_value=research_out),
-        patch("app.engine.agents.analyst.run_analyst", new_callable=AsyncMock,
-              return_value=analyst_out),
+        patch(
+            "app.engine.agents.planner.run_planner",
+            new_callable=AsyncMock,
+            return_value=PLAN,
+        ),
+        patch(
+            "app.engine.agents.researcher.run_researcher",
+            new_callable=AsyncMock,
+            return_value=research_out,
+        ),
+        patch(
+            "app.engine.agents.analyst.run_analyst",
+            new_callable=AsyncMock,
+            return_value=analyst_out,
+        ),
         patch("app.engine.graph.detect_disagreement", mock_crit),
-        patch("app.engine.agents.synthesizer.run_synthesizer", new_callable=AsyncMock,
-              return_value="Revised answer."),
+        patch(
+            "app.engine.agents.synthesizer.run_synthesizer",
+            new_callable=AsyncMock,
+            return_value="Revised answer.",
+        ),
     ):
-        result = await run_graph(_initial_state("test query"), queue, config)
+        result = await run_graph(
+            _initial_state("test query"), queue, config
+        )
 
-    # Critic must have been called at least twice (initial + after revision)
     assert mock_crit.await_count >= 2
     assert result.get("final_answer") is not None
 
 
 @pytest.mark.asyncio
 async def test_revision_bounded():
-    """
-    Even if the critic always disagrees, the revision loop is capped
-    at MAX_REVISIONS=1. The graph must still produce a final_answer.
-    """
+    """The graph must never exceed MAX_REVISIONS=1."""
     from app.engine.graph import run_graph
 
     research_out = _make_agent_output("researcher")
     analyst_out = _make_agent_output("analyst")
     always_disagree = _make_verdict(agree=False)
 
-    queue: asyncio.Queue = asyncio.Queue()
+    queue = asyncio.Queue()
     config = ModelConfig()
 
     with (
-        patch("app.engine.agents.planner.run_planner", new_callable=AsyncMock,
-              return_value=PLAN),
-        patch("app.engine.agents.researcher.run_researcher", new_callable=AsyncMock,
-              return_value=research_out),
-        patch("app.engine.agents.analyst.run_analyst", new_callable=AsyncMock,
-              return_value=analyst_out),
-        patch("app.engine.graph.detect_disagreement", new_callable=AsyncMock,
-              return_value=always_disagree),
-        patch("app.engine.agents.synthesizer.run_synthesizer", new_callable=AsyncMock,
-              return_value="Best effort answer."),
+        patch(
+            "app.engine.agents.planner.run_planner",
+            new_callable=AsyncMock,
+            return_value=PLAN,
+        ),
+        patch(
+            "app.engine.agents.researcher.run_researcher",
+            new_callable=AsyncMock,
+            return_value=research_out,
+        ),
+        patch(
+            "app.engine.agents.analyst.run_analyst",
+            new_callable=AsyncMock,
+            return_value=analyst_out,
+        ),
+        patch(
+            "app.engine.graph.detect_disagreement",
+            new_callable=AsyncMock,
+            return_value=always_disagree,
+        ),
+        patch(
+            "app.engine.agents.synthesizer.run_synthesizer",
+            new_callable=AsyncMock,
+            return_value="Best effort answer.",
+        ),
     ):
-        result = await run_graph(_initial_state("test query"), queue, config)
+        result = await run_graph(
+            _initial_state("test query"), queue, config
+        )
 
-    # Graph must terminate and always produce a final_answer
     assert result.get("final_answer") is not None
-    # revision_count must be capped (not unbounded) — MAX_REVISIONS = 1
     assert result.get("revision_count", 0) <= 1
 
 
 @pytest.mark.asyncio
 async def test_graph_emits_events_to_queue():
-    """
-    The graph should push StreamEvent-compatible dicts into the queue
-    as it progresses through nodes.
-    """
+    """The graph should emit agent progress events."""
     from app.engine.graph import run_graph
 
     research_out = _make_agent_output("researcher")
     analyst_out = _make_agent_output("analyst")
     agree_verdict = _make_verdict(agree=True)
 
-    queue: asyncio.Queue = asyncio.Queue()
+    queue = asyncio.Queue()
     config = ModelConfig()
 
     with (
-        patch("app.engine.agents.planner.run_planner", new_callable=AsyncMock,
-              return_value=PLAN),
-        patch("app.engine.agents.researcher.run_researcher", new_callable=AsyncMock,
-              return_value=research_out),
-        patch("app.engine.agents.analyst.run_analyst", new_callable=AsyncMock,
-              return_value=analyst_out),
-        patch("app.engine.graph.detect_disagreement", new_callable=AsyncMock,
-              return_value=agree_verdict),
-        patch("app.engine.agents.synthesizer.run_synthesizer", new_callable=AsyncMock,
-              return_value="Final answer text."),
+        patch(
+            "app.engine.agents.planner.run_planner",
+            new_callable=AsyncMock,
+            return_value=PLAN,
+        ),
+        patch(
+            "app.engine.agents.researcher.run_researcher",
+            new_callable=AsyncMock,
+            return_value=research_out,
+        ),
+        patch(
+            "app.engine.agents.analyst.run_analyst",
+            new_callable=AsyncMock,
+            return_value=analyst_out,
+        ),
+        patch(
+            "app.engine.graph.detect_disagreement",
+            new_callable=AsyncMock,
+            return_value=agree_verdict,
+        ),
+        patch(
+            "app.engine.agents.synthesizer.run_synthesizer",
+            new_callable=AsyncMock,
+            return_value="Final answer text.",
+        ),
     ):
         await run_graph(_initial_state(), queue, config)
 
-    # At least some events must have been emitted
     assert not queue.empty()
+
     events = []
     while not queue.empty():
         events.append(queue.get_nowait())
 
-    event_types = {e.get("event") for e in events if isinstance(e, dict)}
-    # Planner and synthesizer events are always emitted
+    event_types = {
+        event.get("event")
+        for event in events
+        if isinstance(event, dict)
+    }
+
     assert "agent_start" in event_types
     assert "agent_done" in event_types
+
+
+@pytest.mark.asyncio
+async def test_revision_routing_triggered_on_disagreement():
+    """Disagreement should route to revision_node."""
+    from app.engine.graph import _build_graph
+    from app.config import get_settings
+
+    queue = asyncio.Queue()
+    config = ModelConfig()
+    settings = get_settings()
+
+    state = {
+        **_initial_state(),
+        "critic_verdict": _make_verdict(agree=False),
+        "revision_count": 0,
+    }
+
+    with patch("app.engine.graph.StateGraph") as mock_state_graph:
+        mock_builder = MagicMock()
+        mock_state_graph.return_value = mock_builder
+
+        _build_graph(queue, config, settings)
+
+        mock_builder.add_conditional_edges.assert_called_once()
+        args, _ = mock_builder.add_conditional_edges.call_args
+        _, route_fn, _ = args
+
+        assert route_fn(state) == "revision_node"
+
+
+@pytest.mark.asyncio
+async def test_graph_error_propagates():
+    """Unhandled graph errors should propagate to the backend."""
+    from app.engine import graph as graph_module
+
+    state = _initial_state("test query")
+    queue = asyncio.Queue()
+    config = ModelConfig()
+
+    mock_compiled_graph = AsyncMock()
+    mock_compiled_graph.ainvoke.side_effect = RuntimeError(
+        "Critical node execution failure"
+    )
+
+    with patch.object(
+        graph_module,
+        "_build_graph",
+        return_value=mock_compiled_graph,
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match="Critical node execution failure",
+        ):
+            await graph_module.run_graph(state, queue, config)
