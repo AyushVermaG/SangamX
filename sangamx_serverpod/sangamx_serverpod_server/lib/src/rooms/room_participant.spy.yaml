@@ -1,0 +1,10 @@
+class: RoomParticipant
+table: room_participant
+fields:
+  roomId: int, relation(parent=room, onDelete=Cascade)
+  participantName: String
+  joinedAt: DateTime
+  isOnline: bool
+indexes:
+  room_participant_idx:
+    fields: roomId, participantName

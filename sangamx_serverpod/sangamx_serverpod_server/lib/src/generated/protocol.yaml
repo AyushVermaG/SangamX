@@ -1,0 +1,27 @@
+emailIdp:
+  - startOtpLogin:
+  - verifyOtpLoginCode:
+  - finishOtpLogin:
+  - finishOtpRegistration:
+  - login:
+  - startRegistration:
+  - verifyRegistrationCode:
+  - finishRegistration:
+  - startPasswordReset:
+  - verifyPasswordResetCode:
+  - finishPasswordReset:
+  - hasAccount:
+jwtRefresh:
+  - refreshAccessToken:
+greeting:
+  - hello:
+room:
+  - createRoom:
+  - joinRoom:
+  - getRoom:
+  - watchRoom:
+task:
+  - submitTask:
+  - getTask:
+  - getActiveTask:
+  - watchTask:

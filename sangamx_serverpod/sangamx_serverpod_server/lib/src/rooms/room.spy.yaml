@@ -1,0 +1,11 @@
+class: Room
+table: room
+fields:
+  name: String
+  roomCode: String
+  createdAt: DateTime
+  isActive: bool
+indexes:
+  room_code_unique_idx:
+    fields: roomCode
+    unique: true
