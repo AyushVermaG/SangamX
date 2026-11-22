@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../core/service_locator.dart';
 import '../models/room.dart';
 import '../models/participant.dart';
 import 'problem_submission_screen.dart';
+import 'agent_dashboard_screen.dart';
 
 class SharedRoomScreen extends StatefulWidget {
   final Room room;
@@ -15,11 +18,45 @@ class SharedRoomScreen extends StatefulWidget {
 
 class _SharedRoomScreenState extends State<SharedRoomScreen> {
   late Room _room;
+  StreamSubscription<Room>? _roomSubscription;
 
   @override
   void initState() {
     super.initState();
     _room = widget.room;
+    _subscribeToRoomUpdates();
+  }
+
+  void _subscribeToRoomUpdates() {
+    if (_room.id != null) {
+      _roomSubscription?.cancel();
+      _roomSubscription = ServiceLocator.instance.roomService
+          .watchRoom(_room.id!)
+          .listen((updatedRoom) {
+        if (!mounted) return;
+        setState(() {
+          _room = updatedRoom;
+        });
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _roomSubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refreshRoom() async {
+    if (_room.id == null) return;
+    try {
+      final updated = await ServiceLocator.instance.roomService.getRoom(_room.id!);
+      if (mounted) {
+        setState(() {
+          _room = updated;
+        });
+      }
+    } catch (_) {}
   }
 
   void _copyCode() {
@@ -35,11 +72,18 @@ class _SharedRoomScreenState extends State<SharedRoomScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isMock = ServiceLocator.instance.isMockMode;
+    final hasActiveTask = _room.status == RoomStatus.analyzing && _room.currentProblem != null;
 
     return Scaffold(
       appBar: AppBar(
         title: Text(_room.name),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Refresh Roster',
+            onPressed: _refreshRoom,
+          ),
           IconButton(
             icon: const Icon(Icons.share_rounded),
             tooltip: 'Copy Room Code',
@@ -60,7 +104,7 @@ class _SharedRoomScreenState extends State<SharedRoomScreen> {
                 border: Border.all(color: Colors.grey.shade200),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.04),
+                    color: Colors.black.withValues(alpha: 0.04),
                     blurRadius: 10,
                     offset: const Offset(0, 4),
                   ),
@@ -147,17 +191,30 @@ class _SharedRoomScreenState extends State<SharedRoomScreen> {
                           color: Colors.grey.shade700,
                         ),
                       ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.blueGrey.shade50,
-                          borderRadius: BorderRadius.circular(6),
+                      if (isMock)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.blueGrey.shade50,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Text(
+                            'Demo Swarm Mode',
+                            style: TextStyle(fontSize: 11, color: Colors.blueGrey),
+                          ),
+                        )
+                      else
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.purple.shade50,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            'Serverpod Room ${_room.id ?? ""}',
+                            style: TextStyle(fontSize: 11, color: Colors.purple.shade700, fontWeight: FontWeight.w600),
+                          ),
                         ),
-                        child: const Text(
-                          'Demo Swarm Mode',
-                          style: TextStyle(fontSize: 11, color: Colors.blueGrey),
-                        ),
-                      ),
                     ],
                   ),
                 ],
@@ -201,7 +258,7 @@ class _SharedRoomScreenState extends State<SharedRoomScreen> {
                 color: theme.scaffoldBackgroundColor,
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.05),
+                    color: Colors.black.withValues(alpha: 0.05),
                     offset: const Offset(0, -2),
                     blurRadius: 8,
                   ),
@@ -210,17 +267,35 @@ class _SharedRoomScreenState extends State<SharedRoomScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => ProblemSubmissionScreen(room: _room),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.edit_note_rounded),
-                    label: const Text('Submit Problem Statement'),
-                  ),
+                  if (hasActiveTask) ...[
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => AgentDashboardScreen(
+                              room: _room,
+                              problemStatement: _room.currentProblem!,
+                              taskId: _room.activeTaskId,
+                            ),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.visibility_rounded),
+                      label: const Text('View Active Task in Dashboard'),
+                    ),
+                  ] else ...[
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => ProblemSubmissionScreen(room: _room),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.edit_note_rounded),
+                      label: const Text('Submit Problem Statement'),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -245,14 +320,14 @@ class _SharedRoomScreenState extends State<SharedRoomScreen> {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(
-          color: p.isCurrentUser ? const Color(0xFF6C5CE7).withOpacity(0.5) : Colors.grey.shade200,
+          color: p.isCurrentUser ? const Color(0xFF6C5CE7).withValues(alpha: 0.5) : Colors.grey.shade200,
         ),
       ),
-      color: p.isCurrentUser ? const Color(0xFF6C5CE7).withOpacity(0.04) : Colors.white,
+      color: p.isCurrentUser ? const Color(0xFF6C5CE7).withValues(alpha: 0.04) : Colors.white,
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         leading: CircleAvatar(
-          backgroundColor: color.withOpacity(0.15),
+          backgroundColor: color.withValues(alpha: 0.15),
           foregroundColor: color,
           radius: 20,
           child: Text(
@@ -271,7 +346,7 @@ class _SharedRoomScreenState extends State<SharedRoomScreen> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF6C5CE7).withOpacity(0.15),
+                  color: const Color(0xFF6C5CE7).withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: const Text(
@@ -311,8 +386,8 @@ class _SharedRoomScreenState extends State<SharedRoomScreen> {
         trailing: Container(
           width: 8,
           height: 8,
-          decoration: const BoxDecoration(
-            color: Colors.green,
+          decoration: BoxDecoration(
+            color: p.isOnline ? Colors.green : Colors.grey,
             shape: BoxShape.circle,
           ),
         ),

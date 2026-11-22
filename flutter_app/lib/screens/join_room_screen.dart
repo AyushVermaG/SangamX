@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../services/mock/mock_room_service.dart';
+import '../core/service_locator.dart';
 import 'shared_room_screen.dart';
 
 class JoinRoomScreen extends StatefulWidget {
@@ -38,7 +38,7 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final roomService = MockRoomService();
+      final roomService = ServiceLocator.instance.roomService;
       final room = await roomService.joinRoom(code: code, participantName: name);
 
       if (!mounted) return;
@@ -60,6 +60,7 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isMock = ServiceLocator.instance.isMockMode;
 
     return Scaffold(
       appBar: AppBar(
@@ -93,7 +94,7 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
                   textCapitalization: TextCapitalization.characters,
                   decoration: const InputDecoration(
                     labelText: 'Room Code',
-                    hintText: 'e.g. SANGAM-7429',
+                    hintText: 'e.g. SANGAM-7429 or A8B9C0',
                     prefixIcon: Icon(Icons.meeting_room_outlined),
                   ),
                   validator: (value) {
@@ -125,52 +126,54 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                // Demo Quick Fill Chips
-                Text(
-                  'Known Demo Rooms (Tap to test):',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.grey.shade700,
+                // Demo Quick Fill Chips (Only in mock mode)
+                if (isMock) ...[
+                  Text(
+                    'Known Demo Rooms (Tap to test):',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey.shade700,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    ActionChip(
-                      label: const Text('SANGAM-7429 (Valid)'),
-                      avatar: const Icon(Icons.check_circle_outline, size: 16, color: Colors.green),
-                      onPressed: () {
-                        setState(() {
-                          _codeController.text = 'SANGAM-7429';
-                          _errorMessage = null;
-                        });
-                      },
-                    ),
-                    ActionChip(
-                      label: const Text('DEMO-2026 (Valid)'),
-                      avatar: const Icon(Icons.check_circle_outline, size: 16, color: Colors.green),
-                      onPressed: () {
-                        setState(() {
-                          _codeController.text = 'DEMO-2026';
-                          _errorMessage = null;
-                        });
-                      },
-                    ),
-                    ActionChip(
-                      label: const Text('UNKNOWN-99 (Test Error)'),
-                      avatar: const Icon(Icons.cancel_outlined, size: 16, color: Colors.orange),
-                      onPressed: () {
-                        setState(() {
-                          _codeController.text = 'UNKNOWN-99';
-                          _errorMessage = null;
-                        });
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      ActionChip(
+                        label: const Text('SANGAM-7429 (Valid)'),
+                        avatar: const Icon(Icons.check_circle_outline, size: 16, color: Colors.green),
+                        onPressed: () {
+                          setState(() {
+                            _codeController.text = 'SANGAM-7429';
+                            _errorMessage = null;
+                          });
+                        },
+                      ),
+                      ActionChip(
+                        label: const Text('DEMO-2026 (Valid)'),
+                        avatar: const Icon(Icons.check_circle_outline, size: 16, color: Colors.green),
+                        onPressed: () {
+                          setState(() {
+                            _codeController.text = 'DEMO-2026';
+                            _errorMessage = null;
+                          });
+                        },
+                      ),
+                      ActionChip(
+                        label: const Text('UNKNOWN-99 (Test Error)'),
+                        avatar: const Icon(Icons.cancel_outlined, size: 16, color: Colors.orange),
+                        onPressed: () {
+                          setState(() {
+                            _codeController.text = 'UNKNOWN-99';
+                            _errorMessage = null;
+                          });
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                ],
 
                 // Error Message Display
                 if (_errorMessage != null)

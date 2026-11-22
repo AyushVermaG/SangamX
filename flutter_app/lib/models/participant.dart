@@ -4,6 +4,7 @@ class Participant {
   final String role;
   final bool isHost;
   final bool isCurrentUser;
+  final bool isOnline;
 
   const Participant({
     required this.id,
@@ -11,6 +12,7 @@ class Participant {
     required this.role,
     this.isHost = false,
     this.isCurrentUser = false,
+    this.isOnline = true,
   });
 
   String get initials {

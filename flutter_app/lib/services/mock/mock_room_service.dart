@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 import '../../models/room.dart';
 import '../../models/participant.dart';
@@ -8,8 +9,9 @@ class MockRoomService implements RoomService {
   factory MockRoomService() => _instance;
   MockRoomService._internal();
 
-  final Map<String, Room> _rooms = {
+  final Map<String, Room> _roomsByCode = {
     'SANGAM-7429': Room(
+      id: 7429,
       code: 'SANGAM-7429',
       name: 'SangamX Alpha Collab',
       status: RoomStatus.waiting,
@@ -22,6 +24,7 @@ class MockRoomService implements RoomService {
       isDemo: true,
     ),
     'DEMO-2026': Room(
+      id: 2026,
       code: 'DEMO-2026',
       name: 'Hackathon War Room',
       status: RoomStatus.waiting,
@@ -34,17 +37,14 @@ class MockRoomService implements RoomService {
     ),
   };
 
-  @override
-  List<Participant> getDemoParticipants() {
-    return const [
-      Participant(id: 'p1', name: 'Aarav Patel', role: 'AI Strategist'),
-      Participant(id: 'p2', name: 'Sarah Connor', role: 'Security Lead'),
-      Participant(id: 'p3', name: 'Kenji Sato', role: 'Cloud Architect'),
-    ];
+  final _roomControllers = <int, StreamController<Room>>{};
+
+  StreamController<Room> _getController(int roomId) {
+    return _roomControllers.putIfAbsent(roomId, () => StreamController<Room>.broadcast());
   }
 
   @override
-  Future<Room> createRoom({required String hostName}) async {
+  Future<Room> createRoom({required String name, required String hostName}) async {
     await Future.delayed(const Duration(milliseconds: 300));
     final rand = Random().nextInt(9000) + 1000;
     final code = 'SANGAM-$rand';
@@ -57,8 +57,9 @@ class MockRoomService implements RoomService {
     );
 
     final newRoom = Room(
+      id: rand,
       code: code,
-      name: 'Room $code',
+      name: name.trim().isEmpty ? 'Room $code' : name.trim(),
       status: RoomStatus.waiting,
       createdAt: DateTime.now(),
       participants: [
@@ -68,29 +69,30 @@ class MockRoomService implements RoomService {
       ],
       isDemo: true,
     );
-    _rooms[code] = newRoom;
+    _roomsByCode[code] = newRoom;
+    _getController(rand).add(newRoom);
     return newRoom;
   }
 
   @override
-  Future<Room> getRoom(String code) async {
+  Future<Room> getRoom(int roomId) async {
     await Future.delayed(const Duration(milliseconds: 200));
-    final normalized = code.trim().toUpperCase();
-    if (_rooms.containsKey(normalized)) {
-      return _rooms[normalized]!;
-    }
-    throw Exception("Room code '$code' not found. Available demo codes: 'SANGAM-7429', 'DEMO-2026'");
+    final room = _roomsByCode.values.firstWhere(
+      (r) => r.id == roomId,
+      orElse: () => _roomsByCode.values.first,
+    );
+    return room;
   }
 
   @override
   Future<Room> joinRoom({required String code, required String participantName}) async {
     await Future.delayed(const Duration(milliseconds: 300));
     final normalized = code.trim().toUpperCase();
-    if (!_rooms.containsKey(normalized)) {
+    if (!_roomsByCode.containsKey(normalized)) {
       throw Exception("Room '$code' does not exist. Available demo rooms: 'SANGAM-7429' or 'DEMO-2026'");
     }
 
-    final room = _rooms[normalized]!;
+    final room = _roomsByCode[normalized]!;
     final user = Participant(
       id: 'user_${DateTime.now().millisecondsSinceEpoch}',
       name: participantName.trim().isEmpty ? 'Guest User' : participantName.trim(),
@@ -101,20 +103,33 @@ class MockRoomService implements RoomService {
     final updated = room.copyWith(
       participants: [...room.participants, user],
     );
-    _rooms[normalized] = updated;
+    _roomsByCode[normalized] = updated;
+    if (updated.id != null) {
+      _getController(updated.id!).add(updated);
+    }
     return updated;
   }
 
   @override
+  Stream<Room> watchRoom(int roomId) async* {
+    yield await getRoom(roomId);
+    yield* _getController(roomId).stream;
+  }
+
+  /// Helper for submitting problem in mock mode
   Future<Room> submitProblem({required String roomCode, required String problemStatement}) async {
-    await Future.delayed(const Duration(milliseconds: 400));
+    await Future.delayed(const Duration(milliseconds: 300));
     final normalized = roomCode.trim().toUpperCase();
-    final room = _rooms[normalized] ?? await getRoom(normalized);
+    final room = _roomsByCode[normalized] ?? _roomsByCode.values.first;
     final updated = room.copyWith(
       currentProblem: problemStatement,
       status: RoomStatus.analyzing,
+      activeTaskId: Random().nextInt(8000) + 1000,
     );
-    _rooms[normalized] = updated;
+    _roomsByCode[normalized] = updated;
+    if (updated.id != null) {
+      _getController(updated.id!).add(updated);
+    }
     return updated;
   }
 }

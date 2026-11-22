@@ -1,7 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import '../services/mock/mock_room_service.dart';
+import '../core/service_locator.dart';
 import 'shared_room_screen.dart';
 
 class CreateRoomScreen extends StatefulWidget {
@@ -42,9 +42,11 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   Future<void> _handleEnterRoom() async {
     setState(() => _isLoading = true);
     try {
-      final roomService = MockRoomService();
+      final roomService = ServiceLocator.instance.roomService;
+      final hostName = _nameController.text.trim().isEmpty ? 'Host User' : _nameController.text.trim();
       final room = await roomService.createRoom(
-        hostName: _nameController.text.trim().isEmpty ? 'Host User' : _nameController.text.trim(),
+        name: 'SangamX Collab Room',
+        hostName: hostName,
       );
 
       if (!mounted) return;
@@ -69,6 +71,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isMock = ServiceLocator.instance.isMockMode;
 
     return Scaffold(
       appBar: AppBar(
@@ -98,15 +101,15 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
               Card(
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16),
-                  side: BorderSide(color: const Color(0xFF6C5CE7).withOpacity(0.3), width: 1.5),
+                  side: BorderSide(color: const Color(0xFF6C5CE7).withValues(alpha: 0.3), width: 1.5),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(20.0),
                   child: Column(
                     children: [
-                      const Text(
-                        'DEMO ROOM CODE',
-                        style: TextStyle(
+                      Text(
+                        isMock ? 'DEMO ROOM CODE' : 'ROOM CODE',
+                        style: const TextStyle(
                           fontSize: 12,
                           letterSpacing: 1.5,
                           fontWeight: FontWeight.w600,
@@ -155,31 +158,34 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
               ),
               const SizedBox(height: 16),
 
-              // Demo mode notice
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.amber.shade50,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.amber.shade300),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline_rounded, size: 20, color: Colors.amber.shade900),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Demo Mode: Local state simulation enabled. Real-time multi-device sync will connect to backend.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.amber.shade900,
+              // Demo mode notice (displayed only in mock mode)
+              if (isMock) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.shade50,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.amber.shade300),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline_rounded, size: 20, color: Colors.amber.shade900),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Demo Mode: Local state simulation enabled. Real-time multi-device sync will connect to backend.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.amber.shade900,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 32),
+                const SizedBox(height: 16),
+              ],
+              const SizedBox(height: 16),
 
               // Navigate to Shared Room Button
               ElevatedButton.icon(

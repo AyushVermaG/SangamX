@@ -7,6 +7,8 @@ class MockAgentService implements AgentService {
   factory MockAgentService() => _instance;
   MockAgentService._internal();
 
+  String _lastProblem = 'Architecture Consensus';
+
   @override
   List<AgentInfo> getInitialAgents() {
     return const [
@@ -59,7 +61,24 @@ class MockAgentService implements AgentService {
   }
 
   @override
+  Stream<List<AgentInfo>> watchAgents({
+    required int roomId,
+    String? problemStatement,
+    int? taskId,
+  }) {
+    if (problemStatement != null && problemStatement.isNotEmpty) {
+      _lastProblem = problemStatement;
+    }
+    return runAnalysisSimulation(_lastProblem);
+  }
+
+  @override
+  Future<String?> getFinalAnswer({required int roomId, int? taskId}) async {
+    return getFinalSynthesis(_lastProblem);
+  }
+
   Stream<List<AgentInfo>> runAnalysisSimulation(String problem) async* {
+    _lastProblem = problem;
     List<AgentInfo> current = List.from(getInitialAgents());
 
     // Step 1: Planner begins working
@@ -173,7 +192,6 @@ class MockAgentService implements AgentService {
     yield List.unmodifiable(current);
   }
 
-  @override
   String getFinalSynthesis(String problem) {
     return '''# SangamX Multi-Agent Architectural Synthesis
 **Problem Statement:** $problem

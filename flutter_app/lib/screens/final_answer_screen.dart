@@ -1,18 +1,62 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../core/service_locator.dart';
 import '../models/room.dart';
-import '../services/mock/mock_agent_service.dart';
 import 'shared_room_screen.dart';
 
-class FinalAnswerScreen extends StatelessWidget {
+class FinalAnswerScreen extends StatefulWidget {
   final Room room;
   final String problemStatement;
+  final int? taskId;
+  final String? initialAnswer;
 
   const FinalAnswerScreen({
     super.key,
     required this.room,
     required this.problemStatement,
+    this.taskId,
+    this.initialAnswer,
   });
+
+  @override
+  State<FinalAnswerScreen> createState() => _FinalAnswerScreenState();
+}
+
+class _FinalAnswerScreenState extends State<FinalAnswerScreen> {
+  String? _loadedAnswer;
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadedAnswer = widget.initialAnswer;
+    if (_loadedAnswer == null) {
+      _loadAnswer();
+    }
+  }
+
+  Future<void> _loadAnswer() async {
+    setState(() => _isLoading = true);
+    try {
+      final answer = await ServiceLocator.instance.agentService.getFinalAnswer(
+        roomId: widget.room.id ?? 1,
+        taskId: widget.taskId,
+      );
+      if (mounted) {
+        setState(() {
+          _loadedAnswer = answer ?? 'Synthesis complete. Solution proposal formulated.';
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _loadedAnswer = 'Synthesis completed by 5-agent swarm.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
 
   void _copyAnswer(BuildContext context, String text) {
     Clipboard.setData(ClipboardData(text: text));
@@ -27,8 +71,7 @@ class FinalAnswerScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final agentService = MockAgentService();
-    final finalAnswer = agentService.getFinalSynthesis(problemStatement);
+    final displayAnswer = _loadedAnswer ?? 'Generating final architectural synthesis...';
 
     return Scaffold(
       appBar: AppBar(
@@ -37,7 +80,7 @@ class FinalAnswerScreen extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.copy_rounded),
             tooltip: 'Copy Final Answer',
-            onPressed: () => _copyAnswer(context, finalAnswer),
+            onPressed: () => _copyAnswer(context, displayAnswer),
           ),
         ],
       ),
@@ -95,7 +138,7 @@ class FinalAnswerScreen extends StatelessWidget {
                             ),
                             const SizedBox(height: 6),
                             Text(
-                              problemStatement,
+                              widget.problemStatement,
                               style: const TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w500,
@@ -130,20 +173,26 @@ class FinalAnswerScreen extends StatelessWidget {
                                 ),
                                 IconButton(
                                   icon: const Icon(Icons.copy_rounded, size: 18),
-                                  onPressed: () => _copyAnswer(context, finalAnswer),
+                                  onPressed: () => _copyAnswer(context, displayAnswer),
                                   tooltip: 'Copy Answer',
                                 ),
                               ],
                             ),
                             const Divider(height: 16),
-                            SelectableText(
-                              finalAnswer,
-                              style: const TextStyle(
-                                fontSize: 13.5,
-                                height: 1.5,
-                                color: Color(0xFF2D3436),
+                            if (_isLoading)
+                              const Padding(
+                                padding: EdgeInsets.all(24.0),
+                                child: Center(child: CircularProgressIndicator()),
+                              )
+                            else
+                              SelectableText(
+                                displayAnswer,
+                                style: const TextStyle(
+                                  fontSize: 13.5,
+                                  height: 1.5,
+                                  color: Color(0xFF2D3436),
+                                ),
                               ),
-                            ),
                           ],
                         ),
                       ),
@@ -160,7 +209,7 @@ class FinalAnswerScreen extends StatelessWidget {
                 color: theme.scaffoldBackgroundColor,
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.06),
+                    color: Colors.black.withValues(alpha: 0.06),
                     offset: const Offset(0, -2),
                     blurRadius: 8,
                   ),
@@ -170,7 +219,7 @@ class FinalAnswerScreen extends StatelessWidget {
                 children: [
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: () => _copyAnswer(context, finalAnswer),
+                      onPressed: () => _copyAnswer(context, displayAnswer),
                       icon: const Icon(Icons.copy_rounded),
                       label: const Text('Copy Answer'),
                     ),
@@ -182,7 +231,7 @@ class FinalAnswerScreen extends StatelessWidget {
                         // Return to the shared room
                         Navigator.of(context).pushAndRemoveUntil(
                           MaterialPageRoute(
-                            builder: (_) => SharedRoomScreen(room: room),
+                            builder: (_) => SharedRoomScreen(room: widget.room),
                           ),
                           (route) => route.isFirst,
                         );

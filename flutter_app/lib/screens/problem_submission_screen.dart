@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/service_locator.dart';
 import '../models/room.dart';
 import '../services/mock/mock_room_service.dart';
 import 'agent_dashboard_screen.dart';
@@ -38,18 +39,35 @@ class _ProblemSubmissionScreenState extends State<ProblemSubmissionScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final roomService = MockRoomService();
-      await roomService.submitProblem(
-        roomCode: widget.room.code,
-        problemStatement: problem,
+      final taskService = ServiceLocator.instance.taskService;
+      final roomId = widget.room.id ?? 1;
+
+      // Submit task through TaskService (Serverpod or Mock)
+      final result = await taskService.submitTask(
+        roomId: roomId,
+        query: problem,
       );
+
+      // In mock mode, keep local mock room state updated for tests
+      if (ServiceLocator.instance.isMockMode) {
+        final mockRoomService = MockRoomService();
+        await mockRoomService.submitProblem(
+          roomCode: widget.room.code,
+          problemStatement: problem,
+        );
+      }
 
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => AgentDashboardScreen(
-            room: widget.room,
+            room: widget.room.copyWith(
+              currentProblem: problem,
+              status: RoomStatus.analyzing,
+              activeTaskId: result.id,
+            ),
             problemStatement: problem,
+            taskId: result.id,
           ),
         ),
       );

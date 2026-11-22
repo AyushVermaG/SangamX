@@ -1,18 +1,21 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../core/service_locator.dart';
 import '../models/agent.dart';
 import '../models/room.dart';
-import '../services/mock/mock_agent_service.dart';
+import '../services/agent_service.dart';
 import 'final_answer_screen.dart';
 
 class AgentDashboardScreen extends StatefulWidget {
   final Room room;
   final String problemStatement;
+  final int? taskId;
 
   const AgentDashboardScreen({
     super.key,
     required this.room,
     required this.problemStatement,
+    this.taskId,
   });
 
   @override
@@ -20,35 +23,43 @@ class AgentDashboardScreen extends StatefulWidget {
 }
 
 class _AgentDashboardScreenState extends State<AgentDashboardScreen> {
-  final MockAgentService _agentService = MockAgentService();
+  late final AgentService _agentService;
   late List<AgentInfo> _agents;
-  StreamSubscription<List<AgentInfo>>? _simulationSub;
+  StreamSubscription<List<AgentInfo>>? _agentSubscription;
   bool _isSimulating = false;
   bool _isFinished = false;
 
   @override
   void initState() {
     super.initState();
+    _agentService = ServiceLocator.instance.agentService;
     _agents = _agentService.getInitialAgents();
-    // Start simulation automatically for immediate responsiveness
-    _startSimulation();
+    _startAgentStream();
   }
 
   @override
   void dispose() {
-    _simulationSub?.cancel();
+    _agentSubscription?.cancel();
     super.dispose();
   }
 
-  void _startSimulation() {
-    _simulationSub?.cancel();
+  void _startAgentStream() {
+    _agentSubscription?.cancel();
+    final isMock = ServiceLocator.instance.isMockMode;
+
     setState(() {
-      _isSimulating = true;
+      _isSimulating = isMock;
       _isFinished = false;
       _agents = _agentService.getInitialAgents();
     });
 
-    _simulationSub = _agentService.runAnalysisSimulation(widget.problemStatement).listen(
+    _agentSubscription = _agentService
+        .watchAgents(
+          roomId: widget.room.id ?? 1,
+          problemStatement: widget.problemStatement,
+          taskId: widget.taskId ?? widget.room.activeTaskId,
+        )
+        .listen(
       (updatedAgents) {
         if (!mounted) return;
         setState(() {
@@ -71,7 +82,7 @@ class _AgentDashboardScreenState extends State<AgentDashboardScreen> {
   }
 
   void _triggerSimulatedFailure() {
-    _simulationSub?.cancel();
+    _agentSubscription?.cancel();
     setState(() {
       _isSimulating = false;
       _isFinished = false;
@@ -94,17 +105,13 @@ class _AgentDashboardScreenState extends State<AgentDashboardScreen> {
   }
 
   void _resetAgents() {
-    _simulationSub?.cancel();
-    setState(() {
-      _isSimulating = false;
-      _isFinished = false;
-      _agents = _agentService.getInitialAgents();
-    });
+    _startAgentStream();
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isMock = ServiceLocator.instance.isMockMode;
 
     return Scaffold(
       appBar: AppBar(
@@ -112,36 +119,60 @@ class _AgentDashboardScreenState extends State<AgentDashboardScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Restart Simulation',
-            onPressed: _startSimulation,
+            tooltip: 'Restart / Reconnect',
+            onPressed: _startAgentStream,
           ),
         ],
       ),
       body: SafeArea(
         child: Column(
           children: [
-            // Explicit Demo Banner as required by specification
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              color: Colors.amber.shade100,
-              child: Row(
-                children: [
-                  Icon(Icons.science_outlined, size: 18, color: Colors.amber.shade900),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'DEMO MODE: Simulating 5-agent state transitions. Real AI backend will bind to live events.',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.amber.shade900,
+            // Banner (Demo Mode or Live Serverpod Stream)
+            if (isMock) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                color: Colors.amber.shade100,
+                child: Row(
+                  children: [
+                    Icon(Icons.science_outlined, size: 18, color: Colors.amber.shade900),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'DEMO MODE: Simulating 5-agent state transitions. Real AI backend will bind to live events.',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.amber.shade900,
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
+            ] else ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                color: Colors.purple.shade50,
+                child: Row(
+                  children: [
+                    Icon(Icons.hub_rounded, size: 18, color: Colors.purple.shade700),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'SERVERPOD LIVE STREAM: Room ${widget.room.id ?? ""} • Task ${widget.taskId ?? widget.room.activeTaskId ?? ""}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.purple.shade800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
 
             // Problem Summary Card
             Container(
@@ -184,43 +215,44 @@ class _AgentDashboardScreenState extends State<AgentDashboardScreen> {
               ),
             ),
 
-            // Demo Control State Switcher (for verifications of states)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        minimumSize: const Size(0, 36),
+            // Demo Control State Switcher (Displayed ONLY in mock mode for test verification)
+            if (isMock)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          minimumSize: const Size(0, 36),
+                        ),
+                        onPressed: _isSimulating ? null : _startAgentStream,
+                        child: const Text('Re-run Simulation', style: TextStyle(fontSize: 12)),
                       ),
-                      onPressed: _isSimulating ? null : _startSimulation,
-                      child: const Text('Re-run Simulation', style: TextStyle(fontSize: 12)),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton(
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        minimumSize: const Size(0, 36),
-                        foregroundColor: Colors.redAccent,
-                        side: const BorderSide(color: Colors.redAccent),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          minimumSize: const Size(0, 36),
+                          foregroundColor: Colors.redAccent,
+                          side: const BorderSide(color: Colors.redAccent),
+                        ),
+                        onPressed: _triggerSimulatedFailure,
+                        child: const Text('Test Fail State', style: TextStyle(fontSize: 12)),
                       ),
-                      onPressed: _triggerSimulatedFailure,
-                      child: const Text('Test Fail State', style: TextStyle(fontSize: 12)),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.restart_alt_rounded, size: 20),
-                    tooltip: 'Reset to Waiting',
-                    onPressed: _resetAgents,
-                  ),
-                ],
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.restart_alt_rounded, size: 20),
+                      tooltip: 'Reset to Waiting',
+                      onPressed: _resetAgents,
+                    ),
+                  ],
+                ),
               ),
-            ),
 
             // Agent List
             Expanded(
@@ -240,35 +272,24 @@ class _AgentDashboardScreenState extends State<AgentDashboardScreen> {
                 color: theme.scaffoldBackgroundColor,
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.06),
+                    color: Colors.black.withValues(alpha: 0.06),
                     offset: const Offset(0, -2),
                     blurRadius: 8,
                   ),
                 ],
               ),
               child: ElevatedButton.icon(
-                onPressed: _isFinished
-                    ? () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => FinalAnswerScreen(
-                              room: widget.room,
-                              problemStatement: widget.problemStatement,
-                            ),
-                          ),
-                        );
-                      }
-                    : () {
-                        // Allow skipping directly to preview final answer during demo
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => FinalAnswerScreen(
-                              room: widget.room,
-                              problemStatement: widget.problemStatement,
-                            ),
-                          ),
-                        );
-                      },
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => FinalAnswerScreen(
+                        room: widget.room,
+                        problemStatement: widget.problemStatement,
+                        taskId: widget.taskId ?? widget.room.activeTaskId,
+                      ),
+                    ),
+                  );
+                },
                 icon: const Icon(Icons.assignment_turned_in_rounded),
                 label: Text(_isFinished ? 'View Final Swarm Synthesis' : 'Preview Final Answer (Fast Path)'),
                 style: ElevatedButton.styleFrom(
@@ -317,7 +338,7 @@ class _AgentDashboardScreenState extends State<AgentDashboardScreen> {
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(
           color: agent.state == AgentState.working
-              ? stateColor.withOpacity(0.8)
+              ? stateColor.withValues(alpha: 0.8)
               : Colors.grey.shade200,
           width: agent.state == AgentState.working ? 1.5 : 1.0,
         ),
@@ -332,7 +353,7 @@ class _AgentDashboardScreenState extends State<AgentDashboardScreen> {
               children: [
                 CircleAvatar(
                   radius: 18,
-                  backgroundColor: stateColor.withOpacity(0.12),
+                  backgroundColor: stateColor.withValues(alpha: 0.12),
                   child: Icon(
                     _getIconData(agent.avatarIcon),
                     size: 20,
@@ -364,7 +385,7 @@ class _AgentDashboardScreenState extends State<AgentDashboardScreen> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: stateColor.withOpacity(0.12),
+                    color: stateColor.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Row(
@@ -422,7 +443,7 @@ class _AgentDashboardScreenState extends State<AgentDashboardScreen> {
               const SizedBox(height: 8),
               LinearProgressIndicator(
                 value: agent.progress > 0 ? agent.progress : null,
-                backgroundColor: stateColor.withOpacity(0.2),
+                backgroundColor: stateColor.withValues(alpha: 0.2),
                 valueColor: AlwaysStoppedAnimation<Color>(stateColor),
                 minHeight: 4,
                 borderRadius: BorderRadius.circular(4),
